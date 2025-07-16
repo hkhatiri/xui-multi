@@ -1,5 +1,0 @@
-.web
-.venv
-.states
-__pycache__/
-alembic.ini
