@@ -1,23 +1,26 @@
 import reflex as rx
 from apscheduler.schedulers.blocking import BlockingScheduler
 from datetime import datetime
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-# برای دسترسی به مدل‌ها و کلاینت، نیاز به ایمپورت داریم
+# ایمپورت کردن مدل‌ها و کلاینت
 from xui_multi.models import ManagedService, Panel, PanelConfig
 from xui_multi.xui_client import XUIClient
 
 def sync_and_enforce_limits():
     """
-    این تابع اصلی است که به صورت دوره‌ای اجرا می‌شود.
-    مصرف را سینک کرده و سرویس‌های منقضی شده را حذف می‌کند.
+    تابع اصلی که به صورت دوره‌ای اجرا می‌شود.
     """
     print(f"[{datetime.now()}] --- Running sync job ---")
     
-    # برای استفاده از مدل‌ها در خارج از محیط Reflex، باید کانفیگ را مقداردهی کنیم
+    # --- بخش اصلاح شده برای اتصال به دیتابیس ---
     config = rx.config.get_config()
-    session_maker = rx.db.get_engine(config.db_url).session
+    engine = create_engine(config.db_url)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    # --- پایان بخش اصلاح شده ---
 
-    with session_maker() as session:
+    with SessionLocal() as session:
         # 1. تمام سرویس‌های فعال را پیدا کن
         active_services = session.query(ManagedService).filter(ManagedService.status == "active").all()
         
@@ -46,7 +49,7 @@ def sync_and_enforce_limits():
             time_expired = datetime.now() >= service.end_date
             
             if limit_reached or time_expired:
-                reason = "limit reached" if limit_reached else "expired"
+                reason = "limit_reached" if limit_reached else "expired"
                 print(f"  - Deactivating service {service.name} due to: {reason}")
                 service.status = reason
                 
@@ -64,13 +67,10 @@ def sync_and_enforce_limits():
     print(f"[{datetime.now()}] --- Sync job finished ---")
 
 if __name__ == "__main__":
-    # این اسکریپت را طوری تنظیم می‌کنیم که تابع اصلی را هر ساعت یک بار اجرا کند
     scheduler = BlockingScheduler()
-    # می‌توانید 'hours=1' را برای تست به 'minutes=1' یا 'seconds=30' تغییر دهید
-    scheduler.add_job(sync_and_enforce_limits, 'interval', minutes=1)
+    scheduler.add_job(sync_and_enforce_limits, 'interval', minutes=2)
     
-    print("Scheduler started. Press Ctrl+C to exit.")
-    # اجرای اولین سینک در همان ابتدا
+    print("Scheduler started. Syncing every 2 minutes. Press Ctrl+C to exit.")
     sync_and_enforce_limits()
     try:
         scheduler.start()

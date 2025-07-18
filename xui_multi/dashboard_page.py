@@ -5,19 +5,13 @@ from sqlalchemy.orm import selectinload
 
 class DashboardState(rx.State):
     services: list[ManagedService] = []
-
-    # متغیرها برای مدیریت پنجره Dialog
     show_link_dialog: bool = False
     current_link_to_show: str = ""
-    
-    # متغیر برای نمایش خطای حذف
     delete_error_message: str = ""
-    
     api_url: str = "http://localhost:8000"
     api_key: str = "SECRET_KEY_12345"
 
     async def load_services(self):
-        """سرویس‌ها را از دیتابیس بارگذاری می‌کند."""
         self.delete_error_message = ""
         with rx.session() as session:
             self.services = session.query(ManagedService).options(
@@ -25,13 +19,17 @@ class DashboardState(rx.State):
             ).order_by(ManagedService.id.desc()).all()
 
     async def delete_service(self, uuid: str):
-        """سرویس را از طریق API حذف کرده و خطا را مدیریت می‌کند."""
+        """
+        نسخه نهایی: کد تست حذف شده و منطق اصلی اجرا می‌شود.
+        """
+        # return rx.window_alert(f"Delete event fired for UUID: {uuid}") # <-- این خط را پاک کنید
+
+        # --- منطق اصلی حذف ---
         self.delete_error_message = ""
         headers = {"X-API-KEY": self.api_key}
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.delete(f"{self.api_url}/service/{uuid}", headers=headers)
-                
                 if response.status_code != 200:
                     try:
                         error_data = response.json()
@@ -39,7 +37,7 @@ class DashboardState(rx.State):
                     except:
                         self.delete_error_message = f"Error: {response.status_code} - {response.text}"
                     return
-
+            # فقط در صورت موفقیت، لیست را دوباره بارگذاری کن
             await self.load_services()
         except httpx.RequestError as e:
             self.delete_error_message = f"Connection error: {e}"
@@ -47,28 +45,19 @@ class DashboardState(rx.State):
             self.delete_error_message = f"An unexpected client-side error occurred: {e}"
 
     def open_link_dialog(self, link: str):
-        """پنجره نمایش لینک را باز می‌کند."""
         self.current_link_to_show = link
         self.show_link_dialog = True
 
     def close_link_dialog(self):
-        """پنجره نمایش لینک را می‌بندد."""
         self.show_link_dialog = False
 
 def link_display_dialog() -> rx.Component:
-    """پنجره Dialog برای نمایش لینک اشتراک."""
     return rx.dialog.root(
         rx.dialog.content(
             rx.dialog.title("لینک اشتراک"),
             rx.dialog.description("این لینک را کپی کرده و در کلاینت خود استفاده کنید:"),
             rx.box(
-                rx.text_area(
-                    value=DashboardState.current_link_to_show,
-                    is_read_only=True,
-                    width="100%",
-                    height="100px",
-                    resize="vertical",
-                ),
+                rx.text_area(value=DashboardState.current_link_to_show, is_read_only=True, width="100%", height="100px", resize="vertical"),
                 padding_top="1em"
             ),
             rx.flex(
@@ -83,22 +72,15 @@ def link_display_dialog() -> rx.Component:
     )
 
 def dashboard_page() -> rx.Component:
-    """UI صفحه داشبورد با کدهای سازگار و نمایش خطا"""
     return rx.vstack(
         link_display_dialog(),
-        
         rx.cond(
             DashboardState.delete_error_message != "",
             rx.callout(
                 DashboardState.delete_error_message,
-                icon="alert_triangle",
-                color_scheme="red",
-                role="alert",
-                width="90%",
-                margin_y="1em",
+                icon="circle_help", color_scheme="red", role="alert", width="90%", margin_y="1em",
             )
         ),
-
         rx.heading("داشبورد مدیریت سرویس‌ها", size="7", margin_bottom="1em"),
         rx.table.root(
             rx.table.header(
@@ -127,7 +109,6 @@ def dashboard_page() -> rx.Component:
                                 rx.tooltip(
                                     rx.icon_button(
                                         rx.icon("link"),
-                                        # *** این خط اصلاح شد ***
                                         on_click=lambda: DashboardState.open_link_dialog(service.subscription_link),
                                         size="1"
                                     ),
@@ -139,7 +120,8 @@ def dashboard_page() -> rx.Component:
                                     ),
                                     rx.alert_dialog.content(
                                         rx.alert_dialog.title("تایید حذف"),
-                                        rx.alert_dialog.description(f"آیا از حذف سرویس '{service.name}' مطمئن هستید؟"),
+                                        # *** این خط اصلاح شد ***
+                                        rx.alert_dialog.description("آیا از حذف سرویس '", rx.text.strong(service.name), "' مطمئن هستید؟"),
                                         rx.flex(
                                             rx.alert_dialog.cancel(rx.button("انصراف", variant="soft", color_scheme="gray")),
                                             rx.alert_dialog.action(rx.button("حذف", on_click=lambda: DashboardState.delete_service(service.uuid), color_scheme="ruby")),
