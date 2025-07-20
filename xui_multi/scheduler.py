@@ -1,78 +1,98 @@
-import reflex as rx
-from apscheduler.schedulers.blocking import BlockingScheduler
+import os
+import sys
+import time
 from datetime import datetime
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-# ایمپورت کردن مدل‌ها و کلاینت
-from xui_multi.models import ManagedService, Panel, PanelConfig
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(project_root)
+
+from xui_multi.models import ManagedService, PanelConfig, Panel
 from xui_multi.xui_client import XUIClient
+import reflex as rx
 
-def sync_and_enforce_limits():
-    """
-    تابع اصلی که به صورت دوره‌ای اجرا می‌شود.
-    """
-    print(f"[{datetime.now()}] --- Running sync job ---")
+def check_and_update_services():
+    """سرویس‌ها را بررسی کرده، حجم را آپدیت و در صورت نیاز آن‌ها را غیرفعال می‌کند."""
+    print(f"[{datetime.now()}] --- Scheduler started ---")
     
-    # --- بخش اصلاح شده برای اتصال به دیتابیس ---
-    config = rx.config.get_config()
-    engine = create_engine(config.db_url)
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    # --- پایان بخش اصلاح شده ---
-
-    with SessionLocal() as session:
-        # 1. تمام سرویس‌های فعال را پیدا کن
+    with rx.session() as session:
+        # فقط سرویس‌های فعال را بررسی می‌کنیم
         active_services = session.query(ManagedService).filter(ManagedService.status == "active").all()
         
-        for service in active_services:
-            print(f"Checking service: {service.name} (UUID: {service.uuid})")
-            
-            total_usage_bytes = 0
-            all_configs_on_panels = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
+        print(f"Found {len(active_services)} active services to check.")
 
-            # 2. جمع‌آوری مصرف از تمام پنل‌ها
-            for p_config in all_configs_on_panels:
-                panel = session.query(Panel).filter(Panel.id == p_config.panel_id).one()
+        for service in active_services:
+            total_traffic_gb = 0
+            is_still_active = True
+            
+            # گرفتن تمام کانفیگ‌های این سرویس
+            service_configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
+            
+            # ۱. جمع‌آوری حجم مصرفی از تمام پنل‌ها
+            for config in service_configs:
                 try:
+                    panel = session.query(Panel).filter(Panel.id == config.panel_id).one()
                     client = XUIClient(panel.url, panel.username, panel.password)
-                    inbound_data = client.get_inbound(p_config.panel_inbound_id)
-                    if inbound_data:
-                        total_usage_bytes += inbound_data.get("up", 0) + inbound_data.get("down", 0)
-                except Exception as e:
-                    print(f"  - Could not sync from panel {panel.url}: {e}")
-            
-            # 3. آپدیت مصرف در دیتابیس
-            service.data_used_gb = total_usage_bytes / (1024**3)
-            
-            # 4. بررسی محدودیت‌ها
-            limit_reached = service.data_used_gb >= service.data_limit_gb
-            time_expired = datetime.now() >= service.end_date
-            
-            if limit_reached or time_expired:
-                reason = "limit_reached" if limit_reached else "expired"
-                print(f"  - Deactivating service {service.name} due to: {reason}")
-                service.status = reason
+                    
+                    # گرفتن حجم مصرفی این کانفیگ خاص
+                    traffic_gb = client.get_inbound_traffic_gb(config.panel_inbound_id)
+                    total_traffic_gb += traffic_gb
+                    print(f"  - Traffic for inbound {config.panel_inbound_id} on panel {panel.url}: {traffic_gb:.3f} GB")
                 
-                # 5. حذف inbound ها از تمام پنل‌ها
-                for p_config in all_configs_on_panels:
-                    panel = session.query(Panel).filter(Panel.id == p_config.panel_id).one()
-                    try:
-                        client = XUIClient(panel.url, panel.username, panel.password)
-                        client.delete_inbound(p_config.panel_inbound_id)
-                        print(f"  - Deleted inbound {p_config.panel_inbound_id} from panel {panel.url}")
-                    except Exception as e:
-                        print(f"  - FAILED to delete inbound {p_config.panel_inbound_id} from {panel.url}: {e}")
+                except Exception as e:
+                    print(f"  - WARNING: Could not get traffic for inbound ID {config.panel_inbound_id}. Error: {e}")
             
+            # ۲. آپدیت حجم مصرفی در دیتابیس
+            service.data_used_gb = total_traffic_gb
+            print(f"  -> Total traffic for service '{service.name}' is {total_traffic_gb:.3f} GB.")
+            
+            # ۳. بررسی شرایط برای غیرفعال کردن سرویس
+            should_disable = False
+            reason = ""
+
+            # شرط ۱: تاریخ انقضا
+            if datetime.now() > service.end_date:
+                should_disable = True
+                reason = "expired"
+
+            # شرط ۲: حجم مصرفی
+            elif service.data_used_gb >= service.data_limit_gb:
+                should_disable = True
+                reason = "limit_reached"
+
+            # ۴. اگر یکی از شرایط برقرار بود، سرویس را غیرفعال کن
+            if should_disable:
+                print(f"Disabling service '{service.name}' (UUID: {service.uuid}) due to: {reason}")
+                
+                for config in service_configs:
+                    try:
+                        panel = session.query(Panel).filter(Panel.id == config.panel_id).one()
+                        client = XUIClient(panel.url, panel.username, panel.password)
+                        client.disable_inbound(config.panel_inbound_id)
+                        print(f"  - Successfully disabled inbound ID {config.panel_inbound_id} on panel {panel.url}")
+                    
+                    except Exception as e:
+                        print(f"  - FAILED to disable inbound ID {config.panel_inbound_id} on panel {panel.url}. Error: {e}")
+
+                # آپدیت نهایی وضعیت سرویس در دیتابیس
+                service.status = reason
+                print(f"Service '{service.name}' status updated to '{reason}' in the database.")
+            
+            # ذخیره تغییرات (حجم آپدیت شده و وضعیت جدید در صورت غیرفعال شدن)
+            session.add(service)
             session.commit()
-    print(f"[{datetime.now()}] --- Sync job finished ---")
+
+    print(f"[{datetime.now()}] --- Scheduler finished ---")
+
 
 if __name__ == "__main__":
-    scheduler = BlockingScheduler()
-    scheduler.add_job(sync_and_enforce_limits, 'interval', minutes=2)
-    
-    print("Scheduler started. Syncing every 2 minutes. Press Ctrl+C to exit.")
-    sync_and_enforce_limits()
-    try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    run_interval_seconds = 60  # اجرای هر ۶۰ ثانیه یک بار
+    while True:
+        try:
+            check_and_update_services()
+        except Exception as e:
+            import traceback
+            print(f"A critical error occurred in the scheduler main loop: {e}")
+            traceback.print_exc()
+        
+        print(f"Waiting for {run_interval_seconds} seconds before the next run...")
+        time.sleep(run_interval_seconds)

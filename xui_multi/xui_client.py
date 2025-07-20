@@ -1,203 +1,215 @@
-import requests
-import json
-import uuid as os_uuid
-from datetime import datetime, timedelta
 import base64
+import httpx
+import json
+import urllib.parse
+from uuid import uuid4
+from datetime import datetime, timedelta
+import os
 
 class XUIClient:
-    """کلاسی برای تعامل با API پنل 3x-ui با ساختار payload جدید"""
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(self, base_url, username, password):
         self.base_url = base_url.rstrip('/')
-        self.session = requests.Session()
-        self.login(username, password)
+        self.username = username
+        self.password = password
+        self.session_cookie = self._login()
 
-    def login(self, username, password):
+    def _login(self):
         login_url = f"{self.base_url}/login"
         try:
-            r = self.session.post(login_url, data={'username': username, 'password': password}, timeout=10)
-            r.raise_for_status()
-            if not r.json().get("success"):
-                raise ConnectionError(f"Login failed: {r.json().get('msg')}")
+            with httpx.Client() as client:
+                response = client.post(login_url, data={"username": self.username, "password": self.password})
+                response.raise_for_status()
+                if "session" not in response.cookies:
+                    raise Exception("Login failed: 'session' cookie not found.")
+                return {"session": response.cookies["session"]}
         except Exception as e:
-            raise ConnectionError(f"Failed to login to {self.base_url}: {e}")
+            raise Exception(f"Login failed for panel {self.base_url}: {e}")
 
-    def create_vless_inbound(self, remark: str, domain: str, port: int, expiry_days: int, limit_gb: int) -> dict:
-        """یک inbound جدید از نوع VLESS با هدر Host خالی می‌سازد."""
-        client_id = str(os_uuid.uuid4())
-        sub_id = "".join(os_uuid.uuid4().hex[:16])
-        expiry_time = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000) if expiry_days > 0 else 0
-        traffic_bytes = int(limit_gb * 1024**3)
+    def _get_inbounds_list(self):
+        list_url = f"{self.base_url}/panel/inbound/list"
+        with httpx.Client(cookies=self.session_cookie) as client:
+            response = client.post(list_url)
+            response.raise_for_status()
+            data = response.json()
+            if data and data.get("success"):
+                return data.get("obj", [])
+        raise Exception("Failed to get inbounds list.")
 
-        settings = {
-            "clients": [
-                {
-                    "id": client_id,
-                    "flow": "",
-                    "email": remark,
-                    "limitIp": 0,
-                    "totalGB": traffic_bytes,
-                    "expiryTime": expiry_time,
-                    "enable": True,
-                    "tgId": "",
-                    "subId": sub_id,
-                    "reset": 0
-                }
-            ],
-            "decryption": "none",
-            "fallbacks": []
-        }
-        
-        stream_settings = {
-            "network": "tcp",
-            "security": "none",
-            "tcpSettings": {
-                "acceptProxyProtocol": False,
-                "header": {
-                    "type": "http",
-                    "request": {
-                        "method": "GET",
-                        "path": ["/"],
-                        "headers": {
-                            "Host": [] # *** این خط طبق درخواست شما اصلاح شد ***
-                        }
-                    },
-                    "response": {
-                        "version": "1.1",
-                        "status": "200",
-                        "reason": "OK",
-                        "headers": {}
-                    }
-                }
-            }
-        }
-
-        sniffing = {
-            "enabled": True,
-            "destOverride": ["http", "tls", "quic", "fakedns"]
-        }
-
-        payload = {
-            "up": 0, "down": 0, "total": traffic_bytes, "remark": remark,
-            "enable": True, "expiryTime": expiry_time, "port": port, "protocol": "vless",
-            "settings": json.dumps(settings),
-            "streamSettings": json.dumps(stream_settings),
-            "sniffing": json.dumps(sniffing),
-        }
-        
-        add_url = f"{self.base_url}/panel/api/inbounds/add"
+    def get_inbound(self, inbound_id: int):
         try:
-            response = self.session.post(add_url, data=payload, timeout=15)
+            all_inbounds = self._get_inbounds_list()
+            for inbound in all_inbounds:
+                if inbound.get("id") == inbound_id:
+                    return inbound
+            return None
+        except Exception as e:
+            print(f"Error getting inbound {inbound_id} from {self.base_url}: {e}")
+            raise
+
+    def _construct_config_link(self, inbound_data, domain):
+        protocol = inbound_data.get("protocol")
+        remark = urllib.parse.quote(inbound_data.get("remark", ""))
+        port = inbound_data.get("port")
+        settings_str = inbound_data.get("settings", "{}")
+        settings = json.loads(settings_str)
+
+        if protocol == "vless":
+            uuid = settings["clients"][0]["id"]
+            return f"vless://{uuid}@{domain}:{port}?type=tcp&security=none&headerType=http#{remark}"
+        
+        elif protocol == "shadowsocks":
+            password = settings["clients"][0].get("password")
+            method = settings["clients"][0].get("method")
+            encoded_part = base64.b64encode(f"{method}:{password}".encode()).decode()
+            return f"ss://{encoded_part}@{domain}:{port}#{remark}"
+
+        raise ValueError(f"Link construction for protocol '{protocol}' is not supported.")
+
+    def _create_inbound(self, payload, domain):
+        add_url = f"{self.base_url}/panel/inbound/add"
+        with httpx.Client(cookies=self.session_cookie) as client:
+            response = client.post(add_url, data=payload)
             response.raise_for_status()
             result = response.json()
             if not result.get("success"):
-                raise Exception(f"API Error: {result.get('msg')}")
-            
-            config_link = f"vless://{client_id}@{domain}:{port}?type=tcp&security=none&headerType=http#{remark}"
-            
-            return {"inbound_id": result["obj"]["id"], "link": config_link}
-        except Exception as e:
-            raise ConnectionError(f"Failed to create VLESS inbound on {self.base_url}: {e}")
+                raise Exception(f"Failed to create inbound: {result.get('msg')}")
+            inbound_id = self._get_id_from_remark(payload['remark'])
+            inbound_data = self.get_inbound(inbound_id)
+            config_link = self._construct_config_link(inbound_data, domain)
+            return {"link": config_link, "inbound_id": inbound_id}
 
-    def create_shadowsocks_inbound(self, remark: str, domain: str, port: int, expiry_days: int, limit_gb: int) -> dict:
-        """یک inbound جدید از نوع Shadowsocks می‌سازد."""
-        password = str(os_uuid.uuid4())
-        sub_id = "".join(os_uuid.uuid4().hex[:16])
+    def create_vless_inbound(self, remark, domain, port, expiry_days, limit_gb):
+        expiry_time = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
+        total_gb = int(limit_gb * 1024 * 1024 * 1024)
+        client_id = str(uuid4())
+        settings = {"clients": [{"id": client_id, "email": remark, "totalGB": total_gb, "expiryTime": expiry_time, "enable": True}], "decryption": "none", "fallbacks": []}
+        stream_settings = {"network": "tcp", "security": "none", "tcpSettings": {"header": {"type": "http", "request": {"version": "1.1", "method": "GET", "path": ["/"], "headers": {}}, "response": {"version": "1.1", "status": "200", "reason": "OK", "headers": {}}}}}
+        sniffing = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"]}
+        
+        inbound_payload = {
+            "remark": remark, "port": port, "protocol": "vless", "enable": "true", 
+            "expiryTime": expiry_time, "total": total_gb, "listen": "", 
+            "settings": json.dumps(settings), 
+            "streamSettings": json.dumps(stream_settings), 
+            "sniffing": json.dumps(sniffing)
+        }
+        return self._create_inbound(inbound_payload, domain)
+
+    def create_shadowsocks_inbound(self, remark, domain, port, expiry_days, limit_gb):
+        expiry_time = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
+        total_gb = int(limit_gb * 1024 * 1024 * 1024)
         method = "chacha20-ietf-poly1305"
-        expiry_time = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000) if expiry_days > 0 else 0
-        traffic_bytes = int(limit_gb * 1024**3)
+
+        # ---> اصلاحیه نهایی: ساخت پسورد صحیح برای chacha20 <---
+        # هر پسورد باید ۳۲ بایت دیتای تصادفی باشد که با Base64 کد شده است.
+        main_password = base64.b64encode(os.urandom(32)).decode('utf-8')
+        client_password = base64.b64encode(os.urandom(32)).decode('utf-8')
 
         settings = {
             "method": method,
-            "password": password,
-            "network": "tcp,udp",
+            "password": main_password,
             "clients": [
                 {
                     "method": method,
-                    "password": password,
+                    "password": client_password,
                     "email": remark,
-                    "limitIp": 0,
-                    "totalGB": traffic_bytes,
+                    "totalGB": total_gb,
                     "expiryTime": expiry_time,
                     "enable": True,
-                    "tgId": "",
-                    "subId": sub_id,
-                    "reset": 0
                 }
             ]
         }
+        stream_settings = {"network": "tcp", "security": "none", "tcpSettings": {"header": {"type": "none"}}}
+        sniffing = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"]}
 
-        stream_settings = {
-            "network": "tcp",
-            "security": "none",
-            "tcpSettings": {
-                "acceptProxyProtocol": False,
-                "header": {"type": "none"}
-            }
+        inbound_payload = {
+            "remark": remark, "port": port, "protocol": "shadowsocks", "enable": "true", 
+            "expiryTime": expiry_time, "total": total_gb, "listen": "", 
+            "settings": json.dumps(settings), 
+            "streamSettings": json.dumps(stream_settings), 
+            "sniffing": json.dumps(sniffing)
+        }
+        return self._create_inbound(inbound_payload, domain)
+
+    def update_inbound(self, inbound_id: int, new_total_gb: int, new_expiry_time_ms: int) -> bool:
+        original_inbound = self.get_inbound(inbound_id)
+        if not original_inbound:
+            raise Exception(f"Cannot update: Inbound {inbound_id} not found.")
+
+        settings = json.loads(original_inbound.get("settings", "{}"))
+        
+        if "clients" not in settings or not settings["clients"]:
+            raise Exception("No clients found in settings to update.")
+
+        # برای شدوساکس، متد کلاینت را هم مطابق با payload صحیح تنظیم می‌کنیم
+        if original_inbound.get("protocol") == "shadowsocks":
+            settings["clients"][0]["method"] = "chacha20-ietf-poly1305"
+
+        settings["clients"][0]["totalGB"] = new_total_gb
+        settings["clients"][0]["expiryTime"] = new_expiry_time_ms
+        
+        new_settings_str = json.dumps(settings)
+
+        client_uuid = settings["clients"][0].get("id")
+        if client_uuid:
+            update_client_url = f"{self.base_url}/panel/inbound/updateClient/{client_uuid}"
+            client_payload = {'id': inbound_id, 'settings': new_settings_str}
+            with httpx.Client(cookies=self.session_cookie) as client:
+                client_response = client.post(update_client_url, data=client_payload)
+                if not (client_response.status_code == 200 and client_response.json().get('success')):
+                     print(f"Warning: updateClient call failed for {client_uuid}: {client_response.text}")
+
+        update_inbound_url = f"{self.base_url}/panel/inbound/update/{inbound_id}"
+        
+        update_payload = {
+            "id": original_inbound.get("id"),
+            "enable": True,
+            "remark": original_inbound.get("remark"),
+            "expiryTime": new_expiry_time_ms,
+            "total": new_total_gb,
+            "settings": new_settings_str,
+            "streamSettings": original_inbound.get("streamSettings", {}),
+            "port": original_inbound.get("port"),
+            "protocol": original_inbound.get("protocol"),
+            "sniffing": original_inbound.get("sniffing", {}),
+
+            "listen": original_inbound.get("listen", ""),
         }
         
-        sniffing = {
-            "enabled": True,
-            "destOverride": ["http", "tls", "quic", "fakedns"]
-        }
-
-        payload = {
-            "up": 0, "down": 0, "total": traffic_bytes, "remark": remark,
-            "enable": True, "expiryTime": expiry_time, "port": port, "protocol": "shadowsocks",
-            "settings": json.dumps(settings),
-            "streamSettings": json.dumps(stream_settings),
-            "sniffing": json.dumps(sniffing),
-        }
-        
-        add_url = f"{self.base_url}/panel/api/inbounds/add"
-        try:
-            response = self.session.post(add_url, data=payload, timeout=15)
+        with httpx.Client(cookies=self.session_cookie) as client:
+            response = client.post(update_inbound_url, json=update_payload)
             response.raise_for_status()
             result = response.json()
             if not result.get("success"):
-                raise Exception(f"API Error: {result.get('msg')}")
-            
-            auth_str = f"{method}:{password}"
-            encoded_auth = base64.b64encode(auth_str.encode()).decode()
-            config_link = f"ss://{encoded_auth}@{domain}:{port}#{remark}"
-            
-            return {"inbound_id": result["obj"]["id"], "link": config_link}
-        except Exception as e:
-            raise ConnectionError(f"Failed to create Shadowsocks inbound on {self.base_url}: {e}")
+                raise Exception(f"Main inbound update failed. Panel response: {result.get('msg')}")
+        
+        return True
+
+    def get_inbound_traffic_gb(self, inbound_id: int) -> float:
+        inbound_data = self.get_inbound(inbound_id)
+        if not inbound_data: return 0.0
+        try:
+            up = inbound_data.get("up", 0)
+            down = inbound_data.get("down", 0)
+            return (up + down) / (1024 * 1024 * 1024)
+        except (json.JSONDecodeError, IndexError):
+            return 0.0
+
+    def get_used_ports(self):
+        all_inbounds = self._get_inbounds_list()
+        return [inbound.get("port") for inbound in all_inbounds]
+
+    def _get_id_from_remark(self, remark):
+        all_inbounds = self._get_inbounds_list()
+        for inbound in all_inbounds:
+            if inbound.get("remark") == remark: return inbound.get("id")
+        raise Exception(f"Could not find inbound with remark '{remark}' after creation.")
 
     def delete_inbound(self, inbound_id: int):
-        del_url = f"{self.base_url}/panel/api/inbounds/del/{inbound_id}"
-        try:
-            response = self.session.post(del_url, timeout=10)
+        del_url = f"{self.base_url}/panel/inbound/del/{inbound_id}"
+        with httpx.Client(cookies=self.session_cookie) as client:
+            response = client.post(del_url)
             response.raise_for_status()
             result = response.json()
-            if not result.get("success"):
-                raise Exception(f"API Error: {result.get('msg')}")
-        except Exception as e:
-            raise ConnectionError(f"Failed to delete inbound {inbound_id} on {self.base_url}: {e}")
-
-    def get_used_ports(self) -> list[int]:
-        list_url = f"{self.base_url}/panel/api/inbounds/list"
-        try:
-            response = self.session.get(list_url, timeout=15)
-            response.raise_for_status()
-            result = response.json()
-            if not result.get("success"):
-                raise Exception(f"API Error: {result.get('msg')}")
-            
-            used_ports = [inbound.get("port", 0) for inbound in result.get("obj", [])]
-            return [port for port in used_ports if port != 0]
-        except Exception as e:
-            raise ConnectionError(f"Failed to get used ports from {self.base_url}: {e}")
-
-    def get_inbound(self, inbound_id: int) -> dict | None:
-        get_url = f"{self.base_url}/panel/api/inbounds/get/{inbound_id}"
-        try:
-            response = self.session.get(get_url, timeout=10)
-            response.raise_for_status()
-            result = response.json()
-            if result.get("success"):
-                return result.get("obj")
-            return None
-        except Exception as e:
-            print(f"Could not get inbound {inbound_id} from {self.base_url}: {e}")
-            return None
+            if not result.get("success"): raise Exception(f"Failed to delete inbound {inbound_id}: {result.get('msg')}")
+        return True
