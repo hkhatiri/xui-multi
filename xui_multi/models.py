@@ -1,12 +1,18 @@
+# xui_multi/models.py
+
 from sqlmodel import Field, Relationship, SQLModel
 from typing import List, Optional
 import reflex as rx
 import datetime
 
+class User(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(unique=True, index=True)
+    password_hash: str
+
 class ManagedService(rx.Model, table=True):
     name: str
     uuid: str
-#    protocol: str
     start_date: datetime.datetime
     end_date: datetime.datetime
     data_limit_gb: float
@@ -26,7 +32,9 @@ class Panel(rx.Model, table=True):
     status: str = "نامشخص"
     cookie: Optional[str] = Field(default=None)
     backups: List["Backup"] = Relationship(back_populates="panel")
-
+    online_users: int = 0
+    total_traffic_gb: float = 0.0
+    
 class PanelConfig(rx.Model, table=True):
     managed_service_id: Optional[int] = Field(default=None, foreign_key="managedservice.id")
     panel_id: Optional[int] = Field(default=None, foreign_key="panel.id")
@@ -35,11 +43,10 @@ class PanelConfig(rx.Model, table=True):
     managed_service: Optional[ManagedService] = Relationship(back_populates="configs")
     panel: Optional[Panel] = Relationship(back_populates="configs")
     
-from datetime import datetime
 class Backup(rx.Model, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     panel_id: int = Field(foreign_key="panel.id")
     file_name: str
     file_path: str
-    created_at: datetime = Field(default_factory=datetime.now)
-    panel: Panel = Relationship(back_populates="backups")
+    created_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
+    panel: "Panel" = Relationship(back_populates="backups")

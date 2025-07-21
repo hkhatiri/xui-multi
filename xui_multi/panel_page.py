@@ -1,187 +1,321 @@
 import reflex as rx
-from .models import Panel, Backup
-from .auth_state import AuthState
 from sqlmodel import select
-from typing import List
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 import requests
 import os
 
+from .models import Panel, Backup
+from .auth_state import AuthState
+from .template import template
+from .xui_client import XUIClient
+
+# مسیر ذخیره بکاپ‌ها
 BACKUP_DIR = os.path.join("static", "backups")
 
-class PanelManageState(AuthState):
+# --- State for Panel Management Page ---
+class PanelsState(AuthState):
     panels: List[Panel] = []
     show_dialog: bool = False
-    panel_to_edit: Panel | None = None
+    panel_to_edit: Optional[Panel] = None
 
-    def load_panels(self):
+    def load_panels_with_stats(self):
         self.check_auth()
         with rx.session() as session:
-            self.panels = session.exec(select(Panel)).all()
+            db_panels = session.exec(select(Panel)).all()
+            panels_with_stats = []
+            for panel in db_panels:
+                try:
+                    client = XUIClient(panel.url, panel.username, panel.password)
+                    # This is a placeholder for model attributes that don't exist.
+                    # In a real scenario, you'd handle this differently.
+                    panel.online_users = client.get_online_clients_count()
+                    traffic_data = client.get_all_inbounds_traffic()
+                    total_bytes = traffic_data.get("up", 0) + traffic_data.get("down", 0)
+                    panel.total_traffic_gb = round(total_bytes / (1024**3), 2)
+                except Exception as e:
+                    print(f"Error fetching stats for panel {panel.url}: {e}")
+                    panel.online_users = -1
+                    panel.total_traffic_gb = -1.0
+                panels_with_stats.append(panel)
+            self.panels = panels_with_stats
 
     def change_dialog_state(self, show: bool):
         self.show_dialog = show
         if not show:
             self.panel_to_edit = None
 
-    def open_edit_dialog(self, panel: Panel):
-        self.panel_to_edit = panel
-        self.change_dialog_state(True)
+    def show_add_dialog(self):
+        self.panel_to_edit = None
+        self.show_dialog = True
 
-    def save_panel(self, form_data: dict):
-        with rx.session() as session:
-            if self.panel_to_edit:
-                panel = session.get(Panel, self.panel_to_edit.id)
-                for key, value in form_data.items():
-                    setattr(panel, key, value)
-            else:
-                panel = Panel(**form_data)
-                session.add(panel)
-            
-            session.commit()
-            session.refresh(panel)
+    def show_edit_dialog(self, panel: Panel):
+        self.panel_to_edit = panel
+        self.show_dialog = True
         
-        self.load_panels()
-        self.change_dialog_state(False)
+    def save_panel(self, form_data: dict):
+        self.check_auth()
+        with rx.session() as session:
+            panel_to_update = None
+            if self.panel_to_edit:
+                panel_to_update = session.get(Panel, self.panel_to_edit.id)
+                if panel_to_update:
+                    panel_to_update.url = form_data["url"]
+                    panel_to_update.domain = form_data["domain"]
+                    panel_to_update.remark_prefix = form_data["remark_prefix"]
+                    panel_to_update.username = form_data["username"]
+                    if form_data.get("password"):
+                        panel_to_update.password = form_data["password"]
+            else:
+                panel_to_update = Panel(**form_data)
+            
+            session.add(panel_to_update)
+            session.commit()
+            session.refresh(panel_to_update)
+        self.load_panels_with_stats()
 
     def delete_panel(self, panel_id: int):
+        self.check_auth()
         with rx.session() as session:
-            panel = session.get(Panel, panel_id)
-            if panel:
-                session.delete(panel)
+            panel_to_delete = session.get(Panel, panel_id)
+            if panel_to_delete:
+                backups = session.exec(select(Backup).where(Backup.panel_id == panel_id)).all()
+                for backup in backups:
+                    session.delete(backup)
+                session.delete(panel_to_delete)
                 session.commit()
-        self.load_panels()
+            self.load_panels_with_stats()
 
-    async def manual_backup(self, panel_id: int):
+
+# --- State for Backups Page ---
+class PanelBackupsState(AuthState):
+    panel: Panel = Panel(id=0, url="", domain="", username="", password="", remark_prefix="")
+    backup_views: List[Dict[str, Any]] = []
+    is_backing_up: bool = False
+
+    @rx.var
+    def current_panel_id(self) -> str:
+        return self.router.page.params.get("panel_id", "0")
+
+    def load_backups(self):
+        self.check_auth()
+        with rx.session() as session:
+            if self.current_panel_id.isdigit():
+                panel_id_int = int(self.current_panel_id)
+                self.panel = session.get(Panel, panel_id_int)
+                if self.panel:
+                    backups_from_db = session.exec(select(Backup).where(Backup.panel_id == panel_id_int).order_by(Backup.created_at.desc())).all()
+                    self.backup_views = [
+                        {
+                            "id": b.id, "file_name": b.file_name, "file_path": b.file_path,
+                            "created_at_formatted": b.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                        } for b in backups_from_db
+                    ]
+
+    def delete_backup(self, backup_id: int):
+        self.check_auth()
+        with rx.session() as session:
+            backup_to_delete = session.get(Backup, backup_id)
+            if backup_to_delete:
+                session.delete(backup_to_delete)
+                session.commit()
+            self.load_backups()
+            
+    async def manual_backup(self):
+        if not self.panel: return
+        self.is_backing_up = True
+        yield
         try:
             with rx.session() as session:
-                panel = session.get(Panel, panel_id)
-                if not panel: return
+                panel_in_session = session.get(Panel, self.panel.id)
+                if not panel_in_session: return
+                
                 session_req = requests.Session()
-                res = session_req.post(f"{panel.url.rstrip('/')}/login", data={'username': panel.username, 'password': panel.password}, timeout=10)
+                res = session_req.post(f"{panel_in_session.url.rstrip('/')}/login", data={'username': panel_in_session.username, 'password': panel_in_session.password}, timeout=10)
                 res.raise_for_status()
-                res_db = session_req.get(f"{panel.url.rstrip('/')}/server/getDb", timeout=20)
+                
+                res_db = session_req.get(f"{panel_in_session.url.rstrip('/')}/server/getDb", timeout=20)
                 res_db.raise_for_status()
-                panel_backup_dir = os.path.join(BACKUP_DIR, str(panel.id))
+
+                panel_backup_dir = os.path.join(BACKUP_DIR, str(panel_in_session.id))
                 os.makedirs(panel_backup_dir, exist_ok=True)
+                
                 date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 file_name = f"manual_backup_{date_str}.db"
                 local_file_path = os.path.join(panel_backup_dir, file_name)
+                
                 with open(local_file_path, "wb") as f: f.write(res_db.content)
-                new_backup = Backup(panel_id=panel.id, file_name=file_name, file_path=f"/static/backups/{panel.id}/{file_name}")
+                
+                download_path = f"/static/backups/{panel_in_session.id}/{file_name}"
+                new_backup = Backup(panel_id=panel_in_session.id, file_name=file_name, file_path=download_path)
                 session.add(new_backup)
                 session.commit()
-        except Exception as e: print(f"خطا در بکاپ فوری: {e}")
+                self.load_backups()
+        except Exception as e:
+            print(f"خطا در بکاپ دستی: {e}")
+            yield rx.window_alert(f"خطا در ایجاد بکاپ: {e}")
+        finally:
+            self.is_backing_up = False
+
 
 # --- UI Components ---
-def panel_card(panel: Panel) -> rx.Component:
-    """A card to display panel info with all action buttons."""
-    return rx.card(
-        rx.vstack(
-            rx.hstack(
-                rx.heading(panel.remark_prefix, size="5"),
-                rx.spacer(),
-                # ✨ FIX: Replaced python `if/else` with `rx.cond`
-                rx.cond(
-                    panel.domain,
-                    rx.badge(panel.domain, color_scheme="gray"),
-                    rx.text("") # Render empty text if no domain
-                ),
-                align="center"
-            ),
-            rx.text(panel.url, color_scheme="gray", size="2"),
-            rx.divider(),
-            rx.hstack(
-                rx.button("ویرایش", on_click=lambda: PanelManageState.open_edit_dialog(panel), variant="outline", icon="edit"),
-                rx.button("بکاپ فوری", on_click=lambda: PanelManageState.manual_backup(panel.id), variant="outline", icon="download"),
-                rx.link(rx.button("مدیریت بکاپ", variant="soft", icon="database"), href=f"/panels/{panel.id}/backups"),
-                rx.spacer(),
-                rx.button("حذف", on_click=lambda: PanelManageState.delete_panel(panel.id), color_scheme="red", variant="surface"),
-                width="100%",
-                spacing="3",
-            ),
-            spacing="3",
-            width="100%"
-        )
-    )
-
 def add_edit_panel_dialog() -> rx.Component:
-    """A dialog for adding or editing a panel."""
     return rx.dialog.root(
         rx.dialog.content(
-            rx.dialog.title(
-                rx.cond(
-                    PanelManageState.panel_to_edit,
-                    "ویرایش پنل",
-                    "افزودن پنل جدید"
-                )
-            ),
+            rx.dialog.title(rx.cond(PanelsState.panel_to_edit, "ویرایش پنل", "افزودن پنل جدید")),
             rx.form(
                 rx.vstack(
-                    rx.input(placeholder="نام نمایشی", name="name", default_value=PanelManageState.panel_to_edit.remark_prefix, required=True),
-                    rx.input(placeholder="آدرس پنل (بدون http)", name="url", default_value=PanelManageState.panel_to_edit.url, required=True),
-                    rx.input(placeholder="دامنه (اختیاری)", name="domain", default_value=PanelManageState.panel_to_edit.domain),
-                    # ✨ Field added
-                    rx.input(placeholder="پیشوند Remark (اختیاری)", name="remark_prefix", default_value=PanelManageState.panel_to_edit.remark_prefix),
-                    rx.input(placeholder="نام کاربری", name="username", default_value=PanelManageState.panel_to_edit.username, required=True),
-                    rx.input(placeholder="رمز عبور", name="password", type="password", default_value=PanelManageState.panel_to_edit.password, required=True),
+                    rx.input(placeholder="آدرس پنل", name="url", default_value=rx.cond(PanelsState.panel_to_edit, PanelsState.panel_to_edit.url, ""), required=True),
+                    rx.input(placeholder="دامین یا آیپی سرور", name="domain", default_value=rx.cond(PanelsState.panel_to_edit, PanelsState.panel_to_edit.domain, ""), required=True),
+                    rx.input(placeholder="remark سرویس", name="remark_prefix", default_value=rx.cond(PanelsState.panel_to_edit, PanelsState.panel_to_edit.remark_prefix, ""), required=True),
+                    rx.input(placeholder="نام کاربری", name="username", default_value=rx.cond(PanelsState.panel_to_edit, PanelsState.panel_to_edit.username, ""), required=True),
+                    rx.input(placeholder="رمز عبور (برای ویرایش، خالی بگذارید)", name="password", type="password", required=rx.cond(~PanelsState.panel_to_edit, True, False)),
                     rx.hstack(
                         rx.dialog.close(rx.button("انصراف", variant="soft", color_scheme="gray")),
                         rx.button("ذخیره", type="submit"),
-                        justify="end",
-                        spacing="3",
-                        width="100%",
-                        padding_top="1em"
+                        justify="end", spacing="3", width="100%", padding_top="1em"
                     ),
                     spacing="3",
                 ),
-                on_submit=PanelManageState.save_panel,
+                on_submit=PanelsState.save_panel,
                 reset_on_submit=True,
             ),
+            style={"maxWidth": 450, "direction": "rtl"}
         ),
-        open=PanelManageState.show_dialog,
-        on_open_change=PanelManageState.change_dialog_state,
+        open=PanelsState.show_dialog,
+        on_open_change=PanelsState.change_dialog_state,
     )
 
+def panel_table() -> rx.Component:
+    return rx.table.root(
+        rx.table.header(
+            rx.table.row(
+                rx.table.column_header_cell("عملیات", text_align="center", width="5%"),
+                rx.table.column_header_cell("ترافیک مصرفی (GB)", text_align="center"),
+                rx.table.column_header_cell("کاربران آنلاین", text_align="center"),
+                rx.table.column_header_cell("آدرس پنل", text_align="center"),
+                rx.table.column_header_cell("پیشوند", text_align="right"),
+            )
+        ),
+        rx.table.body(
+            rx.foreach(
+                PanelsState.panels,
+                lambda panel: rx.table.row(
+                    rx.table.cell(
+                        rx.dropdown_menu.root(
+                            rx.dropdown_menu.trigger(rx.icon_button(rx.icon("ellipsis-vertical"), variant="soft")),
+                            rx.dropdown_menu.content(
+                                rx.dropdown_menu.item(
+                                    rx.hstack(rx.icon("pencil", size=16), rx.text("ویرایش پنل")),
+                                    on_click=lambda: PanelsState.show_edit_dialog(panel)
+                                ),
+                                rx.dropdown_menu.item(
+                                    rx.hstack(rx.icon("database", size=16), rx.text("مشاهده بکاپ‌ها")),
+                                    on_click=rx.redirect(f"/panels/{panel.id}/backups")
+                                ),
+                                rx.dropdown_menu.separator(),
+                                rx.dropdown_menu.item(
+                                    rx.hstack(rx.icon("trash-2", size=16), rx.text("حذف پنل")),
+                                    color="red",
+                                    on_click=lambda: PanelsState.delete_panel(panel.id)
+                                ),
+                            ),
+                        ),
+                        text_align="center"
+                    ),
+                    rx.table.cell(rx.badge(rx.cond(panel.total_traffic_gb >= 0, panel.total_traffic_gb.to_string(), "خطا"), color_scheme=rx.cond(panel.total_traffic_gb >= 0, "blue", "red"))),
+                    rx.table.cell(rx.badge(rx.cond(panel.online_users >= 0, panel.online_users.to_string(), "خطا"), color_scheme=rx.cond(panel.online_users >= 0, "teal", "red"))),
+                    rx.table.cell(rx.code(panel.url, style={"direction": "ltr"})),
+                    rx.table.cell(panel.remark_prefix),
+                ),
+            )
+        ),
+        variant="surface",
+    )
+
+def backup_table_row(backup: Dict) -> rx.Component:
+    """Renders a row for the backup table with a dropdown menu for actions."""
+    return rx.table.row(
+        rx.table.cell(
+            rx.dropdown_menu.root(
+                rx.dropdown_menu.trigger(rx.icon_button(rx.icon("ellipsis-vertical"), variant="soft")),
+                rx.dropdown_menu.content(
+                    rx.dropdown_menu.item(
+                        rx.hstack(rx.icon("download", size=16), rx.text("دانلود")),
+                        on_click=rx.download(url=backup["file_path"], filename=backup["file_name"])
+                    ),
+                    # ---------------------
+                    rx.dropdown_menu.separator(),
+                    rx.dropdown_menu.item(
+                        rx.hstack(rx.icon("trash-2", size=16), rx.text("حذف")),
+                        color="red",
+                        on_click=lambda: PanelBackupsState.delete_backup(backup["id"])
+                    ),
+                ),
+            ),
+            text_align="center"
+        ),
+        rx.table.cell(rx.text(backup["created_at_formatted"], style={"direction": "ltr"})),
+        rx.table.cell(backup["file_name"]),
+    )
+
+
+# --- Pages ---
+@template
 def panels_page() -> rx.Component:
-    """The main panel management page."""
-    return rx.vstack(
+    return rx.container(
         add_edit_panel_dialog(),
-        rx.hstack(
-            rx.heading("مدیریت پنل‌ها", size="8"),
-            rx.spacer(),
-            rx.button("افزودن پنل", on_click=lambda: PanelManageState.change_dialog_state(True), icon="plus", size="3"),
-            align="center",
+        rx.vstack(
+            rx.hstack(
+                rx.heading("مدیریت پنل‌های X-UI", size="8"),
+                rx.spacer(),
+                rx.button("افزودن پنل جدید", on_click=PanelsState.show_add_dialog, size="3", high_contrast=True),
+                align="center",
+                width="100%",
+            ),
+            rx.divider(width="100%", margin_y="1.5em"),
+            panel_table(),
+            spacing="5",
             width="100%",
-            margin_bottom="1em",
+            padding_x="2em",
         ),
-        rx.grid(
-            rx.foreach(PanelManageState.panels, panel_card),
-            columns={"initial": "1", "md": "2", "lg": "3"},
-            spacing="4",
-            width="100%"
-        ),
-        on_mount=PanelManageState.load_panels,
-        width="100%",
-        align="center",
-        spacing="4",
-        padding="2em"
+        on_mount=PanelsState.load_panels_with_stats,
     )
 
-# --- Backups Page (No Changes) ---
-class PanelBackupsState(AuthState):
-    panel: Panel | None = None
-    backups: list[Backup] = []
-    def load_backups(self):
-        self.check_auth()
-        panel_id = self.router.page.params.get("panel_id")
-        if not panel_id: return rx.redirect("/panels")
-        with rx.session() as session:
-            self.panel = session.get(Panel, int(panel_id))
-            if self.panel: self.backups = sorted(self.panel.backups, key=lambda b: b.created_at, reverse=True)
-
-def backup_table_row(backup: Backup):
-    return rx.table.row(rx.table.cell(backup.file_name), rx.table.cell(backup.created_at.to_string()), rx.table.cell(rx.link(rx.button("دانلود", variant="outline", icon="download"), href=backup.file_path, download=True)), align="center")
-
+@template
 def backups_page() -> rx.Component:
-    return rx.vstack(rx.cond(PanelBackupsState.panel, rx.vstack(rx.hstack(rx.heading("بکاپ‌های پنل: ", size="7"), rx.heading(PanelBackupsState.panel.remark_prefix, size="7", color_scheme="blue"), align="center"), rx.divider(margin_y="1em"), rx.cond(PanelBackupsState.backups, rx.card(rx.table.root(rx.table.header(rx.table.row(rx.table.column_header_cell("نام فایل"), rx.table.column_header_cell("تاریخ ایجاد"), rx.table.column_header_cell("عملیات"))), rx.table.body(rx.foreach(PanelBackupsState.backups, backup_table_row)), variant="surface", width="100%")), rx.text("هیچ بکاپی یافت نشد.")), width="100%", align="center", spacing="4"), rx.center(rx.spinner(size="3"), height="80vh")), on_mount=PanelBackupsState.load_backups, padding="2em", width="100%")
+    return rx.container(
+        rx.vstack(
+            rx.hstack(
+                rx.heading("لیست بکاپ‌های پنل: ", PanelBackupsState.panel.remark_prefix, size="7"),
+                rx.spacer(),
+                rx.button(
+                    "ایجاد بکاپ جدید", 
+                    icon="download-cloud",
+                    on_click=PanelBackupsState.manual_backup,
+                    loading=PanelBackupsState.is_backing_up,
+                    color_scheme="green"
+                ),
+                rx.link(rx.button("بازگشت"), href="/panels"),
+                align="center",
+                width="100%",
+                spacing="4"
+            ),
+            rx.divider(width="100%", margin_y="1.5em"),
+            rx.table.root(
+                rx.table.header(
+                    rx.table.row(
+                        rx.table.column_header_cell("عملیات", text_align="center", width="5%"),
+                        rx.table.column_header_cell("تاریخ ایجاد", text_align="center"),
+                        rx.table.column_header_cell("نام فایل", text_align="right"),
+                    )
+                ),
+                rx.table.body(rx.foreach(PanelBackupsState.backup_views, backup_table_row)),
+                variant="surface"
+            ),
+            spacing="5",
+            width="100%",
+            padding_x="2em",
+        ),
+        on_mount=PanelBackupsState.load_backups,
+    )

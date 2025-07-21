@@ -43,10 +43,11 @@ def template(page_function: callable) -> rx.Component:
                     rx.link("صفحه اصلی", href="/", width="100%"),
                     rx.link("مدیریت سرویس ها", href="/dashboard", width="100%"),
                     rx.link("مدیریت پنل‌ها", href="/panels", width="100%"),
+                    rx.link("مدیریت ادمین ها", href="/admin", width= "100%"),
                     rx.spacer(),
                     rx.button(
                         "خروج از حساب",
-                        on_click=AuthState.do_logout,
+                        on_click=AuthState.logout,
                         variant="soft",
                         color_scheme="ruby",
                         width="100%"

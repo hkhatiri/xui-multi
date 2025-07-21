@@ -309,8 +309,9 @@ def servies_page() -> rx.Component:
             ), open=DashboardState.show_bulk_delete_dialog, on_open_change=DashboardState.set_show_bulk_delete_dialog
         ),
         
-        rx.heading(" مدیریت سرویس‌ها", size="7", margin_bottom="1em", style={"direction": "rtl", "color": "#1a365d"}),
-
+        rx.heading(" مدیریت سرویس‌ها", size="8", margin_bottom="1em", style={"direction": "rtl", "color": "#1a365d"}),
+        rx.divider(width="100%", margin_y="1.5em"),
+        rx.spacer(),
         rx.hstack(
             rx.hstack(
                 rx.tooltip(rx.icon_button(rx.icon("plus"), on_click=DashboardState.open_create_dialog, color_scheme="grass", variant="solid", size="3"), content="ساخت سرویس جدید"),

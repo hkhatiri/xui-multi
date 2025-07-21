@@ -5,6 +5,7 @@ import urllib.parse
 from uuid import uuid4
 from datetime import datetime, timedelta
 import os
+from typing import Optional
 
 class XUIClient:
     def __init__(self, base_url, username, password):
@@ -78,53 +79,46 @@ class XUIClient:
             config_link = self._construct_config_link(inbound_data, domain)
             return {"link": config_link, "inbound_id": inbound_id}
 
-    def create_vless_inbound(self, remark, domain, port, expiry_days, limit_gb):
-        expiry_time = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
-        total_gb = int(limit_gb * 1024 * 1024 * 1024)
+    def create_vless_inbound(self, remark, domain, port, expiry_days, limit_gb, expiry_time_ms: Optional[int] = None, total_gb_bytes: Optional[int] = None):
+        if expiry_time_ms is None:
+            expiry_time_ms = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
+        if total_gb_bytes is None:
+            total_gb_bytes = int(limit_gb * 1024 * 1024 * 1024)
+        
         client_id = str(uuid4())
-        settings = {"clients": [{"id": client_id, "email": remark, "totalGB": total_gb, "expiryTime": expiry_time, "enable": True}], "decryption": "none", "fallbacks": []}
+        settings = {"clients": [{"id": client_id, "email": remark, "totalGB": total_gb_bytes, "expiryTime": expiry_time_ms, "enable": True}], "decryption": "none", "fallbacks": []}
         stream_settings = {"network": "tcp", "security": "none", "tcpSettings": {"header": {"type": "http", "request": {"version": "1.1", "method": "GET", "path": ["/"], "headers": {}}, "response": {"version": "1.1", "status": "200", "reason": "OK", "headers": {}}}}}
         sniffing = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"]}
         
         inbound_payload = {
             "remark": remark, "port": port, "protocol": "vless", "enable": "true", 
-            "expiryTime": expiry_time, "total": total_gb, "listen": "", 
+            "expiryTime": expiry_time_ms, "total": total_gb_bytes, "listen": "", 
             "settings": json.dumps(settings), 
             "streamSettings": json.dumps(stream_settings), 
             "sniffing": json.dumps(sniffing)
         }
         return self._create_inbound(inbound_payload, domain)
 
-    def create_shadowsocks_inbound(self, remark, domain, port, expiry_days, limit_gb):
-        expiry_time = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
-        total_gb = int(limit_gb * 1024 * 1024 * 1024)
-        method = "chacha20-ietf-poly1305"
+    def create_shadowsocks_inbound(self, remark, domain, port, expiry_days, limit_gb, expiry_time_ms: Optional[int] = None, total_gb_bytes: Optional[int] = None):
+        if expiry_time_ms is None:
+            expiry_time_ms = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
+        if total_gb_bytes is None:
+            total_gb_bytes = int(limit_gb * 1024 * 1024 * 1024)
 
-        # ---> اصلاحیه نهایی: ساخت پسورد صحیح برای chacha20 <---
-        # هر پسورد باید ۳۲ بایت دیتای تصادفی باشد که با Base64 کد شده است.
+        method = "chacha20-ietf-poly1305"
         main_password = base64.b64encode(os.urandom(32)).decode('utf-8')
         client_password = base64.b64encode(os.urandom(32)).decode('utf-8')
 
         settings = {
-            "method": method,
-            "password": main_password,
-            "clients": [
-                {
-                    "method": method,
-                    "password": client_password,
-                    "email": remark,
-                    "totalGB": total_gb,
-                    "expiryTime": expiry_time,
-                    "enable": True,
-                }
-            ]
+            "method": method, "password": main_password,
+            "clients": [{"method": method, "password": client_password, "email": remark, "totalGB": total_gb_bytes, "expiryTime": expiry_time_ms, "enable": True}]
         }
         stream_settings = {"network": "tcp", "security": "none", "tcpSettings": {"header": {"type": "none"}}}
         sniffing = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"]}
 
         inbound_payload = {
             "remark": remark, "port": port, "protocol": "shadowsocks", "enable": "true", 
-            "expiryTime": expiry_time, "total": total_gb, "listen": "", 
+            "expiryTime": expiry_time_ms, "total": total_gb_bytes, "listen": "", 
             "settings": json.dumps(settings), 
             "streamSettings": json.dumps(stream_settings), 
             "sniffing": json.dumps(sniffing)
@@ -141,7 +135,6 @@ class XUIClient:
         if "clients" not in settings or not settings["clients"]:
             raise Exception("No clients found in settings to update.")
 
-        # برای شدوساکس، متد کلاینت را هم مطابق با payload صحیح تنظیم می‌کنیم
         if original_inbound.get("protocol") == "shadowsocks":
             settings["clients"][0]["method"] = "chacha20-ietf-poly1305"
 
@@ -172,7 +165,6 @@ class XUIClient:
             "port": original_inbound.get("port"),
             "protocol": original_inbound.get("protocol"),
             "sniffing": original_inbound.get("sniffing", {}),
-
             "listen": original_inbound.get("listen", ""),
         }
         
@@ -195,6 +187,31 @@ class XUIClient:
         except (json.JSONDecodeError, IndexError):
             return 0.0
 
+    def get_all_inbounds_traffic(self) -> dict:
+        """مجموع ترافیک آپلود و دانلود را برای همه ورودی‌ها دریافت می‌کند."""
+        all_inbounds = self._get_inbounds_list()
+        total_up = 0
+        total_down = 0
+        for inbound in all_inbounds:
+            total_up += inbound.get("up", 0)
+            total_down += inbound.get("down", 0)
+        return {"up": total_up, "down": total_down}
+
+    def get_online_clients_count(self) -> int:
+        """تعداد کاربران آنلاین را دریافت می‌کند."""
+        onlines_url = f"{self.base_url}/panel/inbound/onlines"
+        try:
+            with httpx.Client(cookies=self.session_cookie) as client:
+                response = client.post(onlines_url)
+                response.raise_for_status()
+                data = response.json()
+                if data and data.get("success"):
+                    return len(data.get("obj", []))
+                return 0
+        except Exception as e:
+            print(f"Could not get online clients from {self.base_url}: {e}")
+            return 0
+            
     def get_used_ports(self):
         all_inbounds = self._get_inbounds_list()
         return [inbound.get("port") for inbound in all_inbounds]
