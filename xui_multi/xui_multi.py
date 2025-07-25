@@ -11,7 +11,7 @@ import traceback
 # --- وارد کردن تمام کامپوننت‌ها و State های لازم ---
 from xui_multi.api_routes import api
 from xui_multi.panel_page import panels_page, backups_page
-from xui_multi.servies_page import servies_page
+from xui_multi.services_page import services_page
 from xui_multi.login_page import login_page
 from xui_multi.admin_page import admin_page
 from xui_multi.auth_state import AuthState, create_initial_admin_user
@@ -37,7 +37,7 @@ def run_all_backups():
                 session_req = requests.Session()
                 login_data = {'username': panel.username, 'password': panel.password}
                 login_url = f"{panel.url.rstrip('/')}/login"
-                
+
                 res = session_req.post(login_url, data=login_data, timeout=10)
                 res.raise_for_status()
 
@@ -47,18 +47,18 @@ def run_all_backups():
 
                 panel_backup_dir = os.path.join(BACKUP_DIR, str(panel.id))
                 os.makedirs(panel_backup_dir, exist_ok=True)
-                
+
                 date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 file_name = f"backup_{date_str}.db"
                 local_file_path = os.path.join(panel_backup_dir, file_name)
-                
+
                 with open(local_file_path, "wb") as f:
                     f.write(res_db.content)
-                
+
                 download_path = f"/static/backups/{panel.id}/{file_name}"
                 new_backup = Backup(
-                    panel_id=panel.id, 
-                    file_name=file_name, 
+                    panel_id=panel.id,
+                    file_name=file_name,
                     file_path=download_path
                 )
                 session.add(new_backup)
@@ -83,7 +83,7 @@ class IndexState(AuthState):
     inactive_services: int = 0
     total_configs: int = 0
     backup_count: int = 0
-    
+
     total_traffic_gb: float = 0.0
     total_upload_gb: float = 0.0
     total_download_gb: float = 0.0
@@ -97,9 +97,19 @@ class IndexState(AuthState):
     def load_stats(self):
         self.check_auth()
         with rx.session() as session:
+            creator = session.query(User).filter(User.username == self.token).first()
+            if not creator:
+                return
+
             self.panel_count = session.query(Panel).count()
-            self.total_services = session.query(ManagedService).count()
-            self.inactive_services = session.query(ManagedService).filter(ManagedService.end_date < datetime.now()).count()
+
+            if creator.username == "hkhatiri":
+                self.total_services = session.query(ManagedService).count()
+                self.inactive_services = session.query(ManagedService).filter(ManagedService.end_date < datetime.now()).count()
+            else:
+                self.total_services = session.query(ManagedService).filter(ManagedService.created_by_id == creator.id).count()
+                self.inactive_services = session.query(ManagedService).filter(ManagedService.created_by_id == creator.id, ManagedService.end_date < datetime.now()).count()
+
             self.total_configs = session.query(PanelConfig).count()
             self.backup_count = session.query(Backup).count()
 
@@ -119,7 +129,7 @@ class IndexState(AuthState):
                     total_down_bytes += traffic_data.get("down", 0)
                 except Exception as e:
                     print(f"Could not get stats from panel {panel.url}: {e}")
-            
+
             self.total_upload_gb = total_up_bytes / (1024**3)
             self.total_download_gb = total_down_bytes / (1024**3)
             self.total_traffic_gb = self.total_upload_gb + self.total_download_gb
@@ -134,7 +144,7 @@ class IndexState(AuthState):
         self.show_update_dialog = False
         self.update_message = "در حال بررسی و همگام‌سازی سرویس‌ها..."
         self.update_status = "info"
-        
+
         try:
             with rx.session() as session:
                 all_services = session.query(ManagedService).all()
@@ -153,71 +163,52 @@ class IndexState(AuthState):
                     existing_panel_ids = {config.panel_id for config in service.configs}
                     new_links = []
 
+                    creator = session.query(User).filter(User.id == service.created_by_id).first()
+                    if not creator:
+                        continue
+
                     for panel in all_panels:
                         if panel.id not in existing_panel_ids:
                             print(f"Service '{service.name}' is missing on panel '{panel.remark_prefix}'. Creating...")
                             try:
                                 client = XUIClient(panel.url, panel.username, panel.password)
-                                
+
                                 expiry_time_ms = int(service.end_date.timestamp() * 1000)
                                 limit_gb_bytes = int(service.data_limit_gb * 1024 * 1024 * 1024)
 
                                 used_ports = set(client.get_used_ports())
                                 base_port = 20000
-                                
+
                                 vless_port = base_port
                                 while vless_port in used_ports: vless_port += 1
                                 used_ports.add(vless_port)
 
                                 shadowsocks_port = vless_port + 1
                                 while shadowsocks_port in used_ports: shadowsocks_port += 1
-                                
-                                vless_remark = f"{panel.remark_prefix}-{vless_port}"
-                                vless_result = client.create_vless_inbound(
-                                    remark=vless_remark, 
-                                    domain=panel.domain, 
-                                    port=vless_port, 
-                                    expiry_days=service_data.duration_days, 
-                                    limit_gb=service_data.data_limit_gb
-                                )
-                                
-                                shadowsocks_remark = f"{panel.remark_prefix}-{shadowsocks_port}"
-                                shadowsocks_result = client.create_shadowsocks_inbound(
-                                    remark=shadowsocks_remark, 
-                                    domain=panel.domain, 
-                                    port=shadowsocks_port, 
-                                    expiry_days=service_data.duration_days, 
-                                    limit_gb=service_data.data_limit_gb
-                                )
 
-                                vless_panel_config = PanelConfig(
-                                    managed_service_id=service.id,
-                                    panel_id=panel.id,
-                                    panel_inbound_id=vless_result["inbound_id"],
-                                    config_link=vless_result["link"]
-                                )
-                                ss_panel_config = PanelConfig(
-                                    managed_service_id=service.id,
-                                    panel_id=panel.id,
-                                    panel_inbound_id=shadowsocks_result["inbound_id"],
-                                    config_link=shadowsocks_result["link"]
-                                )
-                                session.add(vless_panel_config)
-                                session.add(ss_panel_config)
+                                remark = f"{panel.remark_prefix}-{creator.remark}"
+                                vless_remark = f"{remark}-{vless_port}"
+                                vless_result = client.create_vless_inbound(vless_remark, panel.domain, vless_port, 0, 0, expiry_time_ms=expiry_time_ms, total_gb_bytes=limit_gb_bytes)
+                                new_links.append(vless_result["link"])
+                                session.add(PanelConfig(managed_service_id=service.id, panel_id=panel.id, panel_inbound_id=vless_result["inbound_id"], config_link=vless_result["link"]))
+                                configs_created_count += 1
 
-                                all_configs_list.append(vless_result["link"])
-                                all_configs_list.append(shadowsocks_result["link"])
+                                ss_remark = f"{remark}-{shadowsocks_port}"
+                                ss_result = client.create_shadowsocks_inbound(ss_remark, panel.domain, shadowsocks_port, 0, 0, expiry_time_ms=expiry_time_ms, total_gb_bytes=limit_gb_bytes)
+                                new_links.append(ss_result["link"])
+                                session.add(PanelConfig(managed_service_id=service.id, panel_id=panel.id, panel_inbound_id=ss_result["inbound_id"], config_link=ss_result["link"]))
+                                configs_created_count += 1
 
                                 was_service_updated = True
                             except Exception as e:
                                 print(f"Error creating config for service {service.name} on panel {panel.url}: {e}")
-                    
+
                     if was_service_updated:
                         services_updated_count += 1
                         if service.subscription_link and new_links:
                             file_name = service.subscription_link.split("/")[-1]
                             file_path = os.path.join("static/subs", file_name)
-                            
+
                             existing_content = ""
                             if os.path.exists(file_path):
                                 with open(file_path, "r") as f:
@@ -233,13 +224,12 @@ class IndexState(AuthState):
 
                             with open(file_path, "w") as f:
                                 f.write(new_base64_content)
-                
+
                 if services_updated_count > 0:
                     session.commit()
-            
+
             self.update_message = f"همگام‌سازی کامل شد. {configs_created_count} کانفیگ جدید برای {services_updated_count} سرویس ساخته شد."
             self.update_status = "success"
-            return rx.window_alert("همگام‌سازی با موفقیت انجام شد.")
 
         except Exception as e:
             self.update_message = f"خطا در همگام‌سازی: {traceback.format_exc()}"
@@ -294,7 +284,7 @@ def index() -> rx.Component:
             stat_card("کاربران آنلاین", IndexState.online_configs_count, "wifi", "teal"),
             traffic_stat_card(),
             stat_card("تعداد پنل‌ها", IndexState.panel_count, "server", "orange"),
-            stat_card("تعداد بکاپ‌ها", IndexState.backup_count, "database", "purple"), 
+            stat_card("تعداد بکاپ‌ها", IndexState.backup_count, "database", "purple"),
             spacing="5", justify="center", wrap="wrap"
         ),
         spacing="4", align="center"),
@@ -320,7 +310,7 @@ app.add_page(login_page, route="/login")
 app.add_page(template(index), route="/", title="داشبورد", on_load=AuthState.check_auth)
 app.add_page(template(panels_page), route="/panels", title="مدیریت پنل‌ها", on_load=AuthState.check_auth)
 app.add_page(template(backups_page), route="/panels/[panel_id]/backups", title="لیست بکاپ‌ها", on_load=AuthState.check_auth)
-app.add_page(template(servies_page), route="/dashboard", title="داشبورد سرویس‌ها", on_load=AuthState.check_auth)
+app.add_page(template(services_page), route="/dashboard", title="داشبورد سرویس‌ها", on_load=AuthState.check_auth)
 app.add_page(template(admin_page), route="/admin", title="مدیریت ادمین‌ها", on_load=AuthState.check_auth)
 
 # --- ایجاد کاربر ادمین اولیه در زمان راه‌اندازی ---

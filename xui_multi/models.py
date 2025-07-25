@@ -9,6 +9,7 @@ class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(unique=True, index=True)
     password_hash: str
+    remark: Optional[str] = Field(default=None)
 
 class ManagedService(rx.Model, table=True):
     name: str
@@ -19,6 +20,8 @@ class ManagedService(rx.Model, table=True):
     data_used_gb: float = 0.0
     status: str = "active"
     subscription_link: str = ""
+    created_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    creator: Optional[User] = Relationship()
     configs: List["PanelConfig"] = Relationship(back_populates="managed_service")
 
 class Panel(rx.Model, table=True):
@@ -34,7 +37,7 @@ class Panel(rx.Model, table=True):
     backups: List["Backup"] = Relationship(back_populates="panel")
     online_users: int = 0
     total_traffic_gb: float = 0.0
-    
+
 class PanelConfig(rx.Model, table=True):
     managed_service_id: Optional[int] = Field(default=None, foreign_key="managedservice.id")
     panel_id: Optional[int] = Field(default=None, foreign_key="panel.id")
@@ -42,7 +45,7 @@ class PanelConfig(rx.Model, table=True):
     config_link: str
     managed_service: Optional[ManagedService] = Relationship(back_populates="configs")
     panel: Optional[Panel] = Relationship(back_populates="configs")
-    
+
 class Backup(rx.Model, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     panel_id: int = Field(foreign_key="panel.id")

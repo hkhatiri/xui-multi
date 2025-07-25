@@ -1,70 +1,95 @@
+# xui_multi/template.py
+
 import reflex as rx
 from .auth_state import AuthState
+from functools import wraps
 
-# استایل برای سایدبار
-sidebar_style = {
-    "direction": "rtl",
-    "position": "fixed",
-    "right": 0,
-    "top": 0,
-    "height": "100%",
-    "width": "250px",
-    "bg": "var(--gray-2)",
-    "border_left": "1px solid var(--gray-4)",
-    "padding": "2em 1em",
-    "display": "flex",
-    "flex_direction": "column",
-    "align_items": "center",
-    "spacing": "5",
-}
+def sidebar_link(text: str, url: str, icon: str) -> rx.Component:
+    """A link to a page in the sidebar."""
+    return rx.link(
+        rx.hstack(
+            rx.icon(icon, size=24),
+            rx.text(text, size="4"),
+            align="center",
+            spacing="4",
+        ),
+        href=url,
+        display="block",
+        padding="0.75em",
+        border_radius="var(--radius-3)",
+        _hover={"background_color": "var(--accent-a3)"},
+        width="100%",
+    )
 
-# استایل برای محتوای اصلی که در کنار سایدبار قرار می‌گیرد
-main_content_style = {
-    "margin_right": "250px", # به اندازه عرض سایدبار
-    "padding": "2em",
-    "width": "calc(100% - 250px)",
-}
+def sidebar() -> rx.Component:
+    """The sidebar for the app."""
+    return rx.vstack(
+        rx.image(src="/logo2.png"),
+        rx.hstack(
+            rx.icon("bar-chart-big", size=32),
+            rx.heading("XUI-Multi", size="7"),
+            align="center",
+            width="100%",
+            padding_bottom="1em"
+        ),
+        rx.divider(),
+        sidebar_link("داشبورد اصلی", "/", "layout-dashboard"),
+        sidebar_link("مدیریت سرویس‌ها", "/dashboard", "users"),
+        sidebar_link("مدیریت پنل‌ها", "/panels", "server"),
 
-# استایل پس‌زمینه متحرک
-animated_background_style = {
-    "background": "linear-gradient(45deg, #e6fffa, #e6f7ff, #ebf5ff)",
-    "background_size": "400% 400%",
-    "animation": "wave 15s ease infinite",
-    "min_height": "100vh",
-}
+        # --- Conditional display for the admin menu ---
+        rx.cond(
+            AuthState.is_admin,
+            sidebar_link("مدیریت ادمین‌ها", "/admin", "user-cog"),
+        ),
 
-def template(page_function: callable) -> rx.Component:
-    def templated_page(*args, **kwargs):
-        page_content = page_function(*args, **kwargs)
-        return rx.theme(
-            rx.box(
-                rx.vstack(
-                    rx.image(src="/logo.png", height="7em"),                        
-                    rx.heading("XUI-Multi", size="7"),             
-                    rx.link("صفحه اصلی", href="/", width="100%"),
-                    rx.link("مدیریت سرویس ها", href="/dashboard", width="100%"),
-                    rx.link("مدیریت پنل‌ها", href="/panels", width="100%"),
-                    rx.link("مدیریت ادمین ها", href="/admin", width= "100%"),
-                    rx.spacer(),
-                    rx.button(
-                        "خروج از حساب",
-                        on_click=AuthState.logout,
-                        variant="soft",
-                        color_scheme="ruby",
-                        width="100%"
-                    ),
-                    style=sidebar_style,
+        rx.spacer(),
+        rx.hstack(
+            rx.avatar(fallback=AuthState.username, weight="bold"),
+            rx.vstack(
+                rx.button(
+                    "خروج از حساب",
+                    on_click=AuthState.logout,
+                    variant="soft",
+                    color_scheme="ruby",
+                    width="100%"
                 ),
-                rx.box(
-                    page_content,
-                    style=main_content_style,
-                ),
-                **animated_background_style
+                align="start",
+                spacing="1"
             ),
-            accent_color="teal",
-            gray_color="slate",
-            radius="large",
-            scaling="100%",
-            panel_background="solid",
+            rx.spacer(),
+            align="center"
+        
+        ),
+        padding="1.5em",
+        border_right="1px solid var(--gray-a5)",
+        background_color="var(--gray-a2)",
+        height="100%",
+        align="start",
+        spacing="3",
+        width="280px" 
+    )
+
+
+def template(page_function):
+    """The main template decorator for all pages."""
+    @wraps(page_function)
+    def wrapper(*args, **kwargs):
+        # Call the original page function to get its component content
+        page_content = page_function(*args, **kwargs)
+
+        # Return the content wrapped in the main layout
+        return rx.hstack(
+            sidebar(),
+            rx.box(
+                page_content,
+                padding="2em",
+                width="100%",
+                height="100vh",
+                overflow_y="auto",
+            ),
+            align="start",
+            height="100vh",
+            width="100%"
         )
-    return templated_page
+    return wrapper

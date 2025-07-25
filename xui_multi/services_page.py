@@ -1,6 +1,9 @@
+# xui_multi/services_page.py
+
 import reflex as rx
 import httpx
-from .models import ManagedService
+from .models import ManagedService, User
+from .auth_state import AuthState
 from sqlalchemy.orm import selectinload
 import datetime
 import math
@@ -15,19 +18,21 @@ STATUS_TRANSLATIONS = {
 
 def format_remaining_time(end_date: datetime.datetime, status: str) -> str:
     """زمان باقی‌مانده را به فرمت 'Xd, Yh' تبدیل می‌کند."""
+    if not end_date:
+        return "نامشخص"
     now = datetime.datetime.now(end_date.tzinfo)
     diff = end_date - now
     if diff.total_seconds() <= 0:
-        return "Expired" if status == "active" else status
+        return "منقضی شده"
     days = diff.days
     hours = diff.seconds // 3600
-    return f"{days}d, {hours}h"
+    return f"{days} روز, {hours} ساعت"
 
-class DashboardState(rx.State):
+class DashboardState(AuthState):
     # --- متغیرهای اصلی ---
     all_services: List[Dict[str, Any]] = []
     services_display: List[Dict[str, Any]] = []
-    
+
     # --- متغیرهای جستجو و صفحه‌بندی ---
     search_query: str = ""
     current_page: int = 1
@@ -55,7 +60,7 @@ class DashboardState(rx.State):
     is_deleting: bool = False
     show_bulk_delete_dialog: bool = False
     is_bulk_deleting: bool = False
-    
+
     # --- متغیرهای نمایش پیام ---
     action_message: str = ""
     action_status: str = ""
@@ -82,15 +87,24 @@ class DashboardState(rx.State):
 
     def set_edit_limit_from_slider(self, value: List[int | float]):
         self.edit_limit = int(value[0])
-        
+
     async def load_and_filter_services(self):
         """سرویس‌ها را از دیتابیس بارگذاری، فیلتر و صفحه‌بندی می‌کند."""
+        self.check_auth()
         self.action_message = ""
         with rx.session() as session:
+            creator = session.query(User).filter(User.username == self.token).first()
+            if not creator:
+                return
+
             query = session.query(ManagedService).options(selectinload(ManagedService.configs))
+
+            if not self.is_admin:
+                query = query.filter(ManagedService.created_by_id == creator.id)
+
             if self.search_query:
                 query = query.filter(ManagedService.name.contains(self.search_query))
-            
+
             services_from_db = query.order_by(ManagedService.id.desc()).all()
 
             self.all_services = [
@@ -100,7 +114,7 @@ class DashboardState(rx.State):
                     "config_count": len(s.configs),
                     "data_usage": f"{s.data_used_gb:.2f} / {s.data_limit_gb} GB",
                     "data_limit_gb": s.data_limit_gb,
-                    "remaining_days": (s.end_date - datetime.datetime.now(s.end_date.tzinfo)).days,
+                    "remaining_days": (s.end_date - datetime.datetime.now(s.end_date.tzinfo)).days if s.end_date else 0,
                     "remaining_time": format_remaining_time(s.end_date, s.status),
                     "subscription_link": s.subscription_link,
                 }
@@ -142,7 +156,7 @@ class DashboardState(rx.State):
             self.create_error_message = "نام سرویس نمی‌تواند خالی باشد."
             return
         self.is_creating = True
-        headers = {"X-API-KEY": self.api_key}
+        headers = {"X-API-KEY": self.api_key, "Authorization": f"Bearer {self.token}"}
         payload = {"name": self.new_service_name, "duration_days": self.new_service_duration, "data_limit_gb": self.new_service_limit}
         try:
             async with httpx.AsyncClient() as client:
@@ -171,7 +185,7 @@ class DashboardState(rx.State):
     async def handle_edit_service(self):
         self.is_editing = True
         self.edit_error_message = ""
-        headers = {"X-API-KEY": self.api_key}
+        headers = {"X-API-KEY": self.api_key, "Authorization": f"Bearer {self.token}"}
         payload = {"duration_days": self.edit_duration, "data_limit_gb": self.edit_limit}
         uuid = self.service_to_edit.get("uuid")
         try:
@@ -198,7 +212,7 @@ class DashboardState(rx.State):
     async def handle_delete_service(self):
         self.is_deleting = True
         uuid = self.service_to_delete.get("uuid")
-        headers = {"X-API-KEY": self.api_key}
+        headers = {"X-API-KEY": self.api_key, "Authorization": f"Bearer {self.token}"}
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.delete(f"{self.api_url}/service/{uuid}", headers=headers, timeout=60)
@@ -224,7 +238,7 @@ class DashboardState(rx.State):
     async def confirm_bulk_delete(self):
         self.is_bulk_deleting = True
         self.show_bulk_delete_dialog = False
-        headers = {"X-API-KEY": self.api_key}
+        headers = {"X-API-KEY": self.api_key, "Authorization": f"Bearer {self.token}"}
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.delete(f"{self.api_url}/services/inactive", headers=headers, timeout=120)
@@ -293,15 +307,13 @@ def delete_service_dialog() -> rx.Component:
     )
 
 # --- کامپوننت اصلی صفحه ---
-
-def servies_page() -> rx.Component:
+def services_page() -> rx.Component:
     return rx.vstack(
-        # --- همه مودال‌ها در اینجا قرار می‌گیرند ---
         create_service_dialog(),
         edit_service_dialog(),
         delete_service_dialog(),
-        
-        rx.alert_dialog.root( # مودال حذف گروهی
+
+        rx.alert_dialog.root(
             rx.alert_dialog.content(
                 rx.alert_dialog.title("تایید حذف گروهی"),
                 rx.alert_dialog.description("آیا از حذف تمام سرویس‌های غیرفعال مطمئن هستید؟ این عمل غیرقابل بازگشت است."),
@@ -312,14 +324,21 @@ def servies_page() -> rx.Component:
                 ), style={"direction": "rtl"}
             ), open=DashboardState.show_bulk_delete_dialog, on_open_change=DashboardState.set_show_bulk_delete_dialog
         ),
-        
-        rx.heading(" مدیریت سرویس‌ها", size="8", margin_bottom="1em", style={"direction": "rtl", "color": "#1a365d"}),
+
+        rx.heading("مدیریت سرویس‌ها", size="8", margin_bottom="1em", style={"direction": "rtl", "color": "#1a365d"}),
         rx.divider(width="100%", margin_y="1.5em"),
         rx.spacer(),
         rx.hstack(
             rx.hstack(
                 rx.tooltip(rx.icon_button(rx.icon("plus"), on_click=DashboardState.open_create_dialog, color_scheme="grass", variant="solid", size="3"), content="ساخت سرویس جدید"),
-                rx.tooltip(rx.icon_button(rx.icon("trash-2"), on_click=DashboardState.trigger_bulk_delete_dialog, color_scheme="ruby", variant="solid", size="3"), content="حذف سرویس‌های غیرفعال"),
+                
+                # --- شرط نمایش دکمه حذف گروهی ---
+                rx.cond(
+                    DashboardState.is_admin,
+                    rx.tooltip(rx.icon_button(rx.icon("trash-2"), on_click=DashboardState.trigger_bulk_delete_dialog, color_scheme="ruby", variant="solid", size="3"), content="حذف سرویس‌های غیرفعال"),
+                ),
+                # ---------------------------------
+                
                 spacing="3",
             ),
             rx.spacer(),
@@ -359,7 +378,7 @@ def servies_page() -> rx.Component:
                     lambda service: rx.table.row(
                         rx.table.cell(
                             rx.dropdown_menu.root(
-                                rx.dropdown_menu.trigger(rx.button(rx.icon("ellipsis-vertical"), variant="soft")), 
+                                rx.dropdown_menu.trigger(rx.button(rx.icon("ellipsis-vertical"), variant="soft")),
                                 rx.dropdown_menu.content(
                                     rx.dropdown_menu.item(
                                         rx.hstack(rx.icon("clipboard-copy", size=16), rx.text("کپی لینک"), spacing="2"),

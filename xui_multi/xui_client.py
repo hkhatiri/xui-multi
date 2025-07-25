@@ -57,7 +57,7 @@ class XUIClient:
         if protocol == "vless":
             uuid = settings["clients"][0]["id"]
             return f"vless://{uuid}@{domain}:{port}?type=tcp&security=none&headerType=http#{remark}"
-        
+
         elif protocol == "shadowsocks":
             password = settings["clients"][0].get("password")
             method = settings["clients"][0].get("method")
@@ -84,17 +84,17 @@ class XUIClient:
             expiry_time_ms = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
         if total_gb_bytes is None:
             total_gb_bytes = int(limit_gb * 1024 * 1024 * 1024)
-        
+
         client_id = str(uuid4())
         settings = {"clients": [{"id": client_id, "email": remark, "totalGB": total_gb_bytes, "expiryTime": expiry_time_ms, "enable": True}], "decryption": "none", "fallbacks": []}
         stream_settings = {"network": "tcp", "security": "none", "tcpSettings": {"header": {"type": "http", "request": {"version": "1.1", "method": "GET", "path": ["/"], "headers": {}}, "response": {"version": "1.1", "status": "200", "reason": "OK", "headers": {}}}}}
         sniffing = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"]}
-        
+
         inbound_payload = {
-            "remark": remark, "port": port, "protocol": "vless", "enable": "true", 
-            "expiryTime": expiry_time_ms, "total": total_gb_bytes, "listen": "", 
-            "settings": json.dumps(settings), 
-            "streamSettings": json.dumps(stream_settings), 
+            "remark": remark, "port": port, "protocol": "vless", "enable": "true",
+            "expiryTime": expiry_time_ms, "total": total_gb_bytes, "listen": "",
+            "settings": json.dumps(settings),
+            "streamSettings": json.dumps(stream_settings),
             "sniffing": json.dumps(sniffing)
         }
         return self._create_inbound(inbound_payload, domain)
@@ -117,10 +117,10 @@ class XUIClient:
         sniffing = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"]}
 
         inbound_payload = {
-            "remark": remark, "port": port, "protocol": "shadowsocks", "enable": "true", 
-            "expiryTime": expiry_time_ms, "total": total_gb_bytes, "listen": "", 
-            "settings": json.dumps(settings), 
-            "streamSettings": json.dumps(stream_settings), 
+            "remark": remark, "port": port, "protocol": "shadowsocks", "enable": "true",
+            "expiryTime": expiry_time_ms, "total": total_gb_bytes, "listen": "",
+            "settings": json.dumps(settings),
+            "streamSettings": json.dumps(stream_settings),
             "sniffing": json.dumps(sniffing)
         }
         return self._create_inbound(inbound_payload, domain)
@@ -131,7 +131,7 @@ class XUIClient:
             raise Exception(f"Cannot update: Inbound {inbound_id} not found.")
 
         settings = json.loads(original_inbound.get("settings", "{}"))
-        
+
         if "clients" not in settings or not settings["clients"]:
             raise Exception("No clients found in settings to update.")
 
@@ -140,7 +140,7 @@ class XUIClient:
 
         settings["clients"][0]["totalGB"] = new_total_gb
         settings["clients"][0]["expiryTime"] = new_expiry_time_ms
-        
+
         new_settings_str = json.dumps(settings)
 
         client_uuid = settings["clients"][0].get("id")
@@ -153,7 +153,7 @@ class XUIClient:
                      print(f"Warning: updateClient call failed for {client_uuid}: {client_response.text}")
 
         update_inbound_url = f"{self.base_url}/panel/inbound/update/{inbound_id}"
-        
+
         update_payload = {
             "id": original_inbound.get("id"),
             "enable": True,
@@ -167,14 +167,14 @@ class XUIClient:
             "sniffing": original_inbound.get("sniffing", {}),
             "listen": original_inbound.get("listen", ""),
         }
-        
+
         with httpx.Client(cookies=self.session_cookie) as client:
             response = client.post(update_inbound_url, json=update_payload)
             response.raise_for_status()
             result = response.json()
             if not result.get("success"):
                 raise Exception(f"Main inbound update failed. Panel response: {result.get('msg')}")
-        
+
         return True
 
     def get_inbound_traffic_gb(self, inbound_id: int) -> float:
@@ -211,7 +211,7 @@ class XUIClient:
         except Exception as e:
             print(f"Could not get online clients from {self.base_url}: {e}")
             return 0
-            
+
     def get_used_ports(self):
         all_inbounds = self._get_inbounds_list()
         return [inbound.get("port") for inbound in all_inbounds]

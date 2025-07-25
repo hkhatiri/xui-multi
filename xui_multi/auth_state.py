@@ -26,13 +26,13 @@ def create_initial_admin_user():
                 default_username = "hkhatiri"
                 default_password = "Hkhatiri1471"
                 hashed_pw = hash_password(default_password)
-                
+
                 admin_user = User(username=default_username, password_hash=hashed_pw)
                 session.add(admin_user)
                 session.commit()
                 print(f"کاربر '{default_username}' با رمز عبور '{default_password}' ایجاد شد.")
                 print("!!! لطفاً پس از اولین ورود، رمز عبور پیش‌فرض را تغییر دهید. !!!")
-        
+
         except OperationalError as e:
             # اگر خطا مربوط به عدم وجود جدول بود، آن را نادیده بگیر
             # این حالت دقیقا در زمان اجرای `reflex db init` رخ می‌دهد
@@ -47,20 +47,23 @@ class AuthState(rx.State):
     """منطق احراز هویت که اکنون از دیتابیس استفاده می‌کند."""
     token: Optional[str] = rx.LocalStorage()
     is_authenticated: bool = False
+    is_admin: bool = False
     username: str = ""
     password: str = ""
     error_message: str = ""
+
     def check_auth(self):
         """بررسی می‌کند که آیا توکن کاربر معتبر است یا خیر."""
         if not self.token:
             self.is_authenticated = False
             return rx.redirect("/login")
-        
+
         with rx.session() as session:
             user = session.exec(select(User).where(User.username == self.token)).first()
             if user:
                 self.is_authenticated = True
                 self.username = user.username
+                self.is_admin = self.username == "hkhatiri"
             else:
                 self.logout()
 
