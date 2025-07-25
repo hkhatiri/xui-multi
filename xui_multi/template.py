@@ -39,7 +39,8 @@ def template(page_function: callable) -> rx.Component:
         return rx.theme(
             rx.box(
                 rx.vstack(
-                    rx.heading("XUI-Multi", size="7", margin_bottom="1em"),
+                    rx.image(src="/logo.png", height="7em"),                        
+                    rx.heading("XUI-Multi", size="7"),             
                     rx.link("صفحه اصلی", href="/", width="100%"),
                     rx.link("مدیریت سرویس ها", href="/dashboard", width="100%"),
                     rx.link("مدیریت پنل‌ها", href="/panels", width="100%"),

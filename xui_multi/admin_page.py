@@ -86,6 +86,7 @@ class AdminState(AuthState):
         # بستن دیالوگ و بارگذاری مجدد لیست
         self.show_dialog = False
         self.load_users()
+        return rx.window_alert("عملیات با موفقیت انجام شد.")
 
     def delete_user(self, user_id: int):
         """حذف کاربر از دیتابیس."""
@@ -96,6 +97,7 @@ class AdminState(AuthState):
                 session.delete(user_to_delete)
                 session.commit()
             self.load_users()
+        return rx.window_alert("کاربر با موفقیت حذف شد.")
 
 # --- کامپوننت‌های UI ---
 

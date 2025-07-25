@@ -73,6 +73,8 @@ class PanelsState(AuthState):
             session.commit()
             session.refresh(panel_to_update)
         self.load_panels_with_stats()
+        self.show_dialog = False
+        return rx.window_alert("پنل با موفقیت ذخیره شد.")
 
     def delete_panel(self, panel_id: int):
         self.check_auth()
@@ -85,6 +87,7 @@ class PanelsState(AuthState):
                 session.delete(panel_to_delete)
                 session.commit()
             self.load_panels_with_stats()
+        return rx.window_alert("پنل با موفقیت حذف شد.")
 
 
 # --- State for Backups Page ---

@@ -6,3 +6,4 @@ redis
 eventlet
 httpx
 bcrypt
+dotenv

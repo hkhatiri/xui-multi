@@ -173,17 +173,41 @@ class IndexState(AuthState):
                                 while shadowsocks_port in used_ports: shadowsocks_port += 1
                                 
                                 vless_remark = f"{panel.remark_prefix}-{vless_port}"
-                                vless_result = client.create_vless_inbound(vless_remark, panel.domain, vless_port, 0, 0, expiry_time_ms=expiry_time_ms, total_gb_bytes=limit_gb_bytes)
-                                new_links.append(vless_result["link"])
-                                session.add(PanelConfig(managed_service_id=service.id, panel_id=panel.id, panel_inbound_id=vless_result["inbound_id"], config_link=vless_result["link"]))
-                                configs_created_count += 1
-
-                                ss_remark = f"{panel.remark_prefix}-{shadowsocks_port}"
-                                ss_result = client.create_shadowsocks_inbound(ss_remark, panel.domain, shadowsocks_port, 0, 0, expiry_time_ms=expiry_time_ms, total_gb_bytes=limit_gb_bytes)
-                                new_links.append(ss_result["link"])
-                                session.add(PanelConfig(managed_service_id=service.id, panel_id=panel.id, panel_inbound_id=ss_result["inbound_id"], config_link=ss_result["link"]))
-                                configs_created_count += 1
+                                vless_result = client.create_vless_inbound(
+                                    remark=vless_remark, 
+                                    domain=panel.domain, 
+                                    port=vless_port, 
+                                    expiry_days=service_data.duration_days, 
+                                    limit_gb=service_data.data_limit_gb
+                                )
                                 
+                                shadowsocks_remark = f"{panel.remark_prefix}-{shadowsocks_port}"
+                                shadowsocks_result = client.create_shadowsocks_inbound(
+                                    remark=shadowsocks_remark, 
+                                    domain=panel.domain, 
+                                    port=shadowsocks_port, 
+                                    expiry_days=service_data.duration_days, 
+                                    limit_gb=service_data.data_limit_gb
+                                )
+
+                                vless_panel_config = PanelConfig(
+                                    managed_service_id=service.id,
+                                    panel_id=panel.id,
+                                    panel_inbound_id=vless_result["inbound_id"],
+                                    config_link=vless_result["link"]
+                                )
+                                ss_panel_config = PanelConfig(
+                                    managed_service_id=service.id,
+                                    panel_id=panel.id,
+                                    panel_inbound_id=shadowsocks_result["inbound_id"],
+                                    config_link=shadowsocks_result["link"]
+                                )
+                                session.add(vless_panel_config)
+                                session.add(ss_panel_config)
+
+                                all_configs_list.append(vless_result["link"])
+                                all_configs_list.append(shadowsocks_result["link"])
+
                                 was_service_updated = True
                             except Exception as e:
                                 print(f"Error creating config for service {service.name} on panel {panel.url}: {e}")
@@ -215,6 +239,7 @@ class IndexState(AuthState):
             
             self.update_message = f"همگام‌سازی کامل شد. {configs_created_count} کانفیگ جدید برای {services_updated_count} سرویس ساخته شد."
             self.update_status = "success"
+            return rx.window_alert("همگام‌سازی با موفقیت انجام شد.")
 
         except Exception as e:
             self.update_message = f"خطا در همگام‌سازی: {traceback.format_exc()}"

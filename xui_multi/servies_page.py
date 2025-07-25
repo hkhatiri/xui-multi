@@ -152,6 +152,7 @@ class DashboardState(rx.State):
                     self.action_message = "سرویس با موفقیت ساخته شد."
                     self.action_status = "success"
                     await self.load_and_filter_services()
+                    return rx.window_alert("سرویس با موفقیت ایجاد شد.")
                 else:
                     self.create_error_message = f"خطا: {response.text}"
         except Exception as e:
@@ -181,6 +182,7 @@ class DashboardState(rx.State):
                     self.action_message = "سرویس با موفقیت ویرایش شد."
                     self.action_status = "success"
                     await self.load_and_filter_services()
+                    return rx.window_alert("سرویس با موفقیت ویرایش شد.")
                 else:
                     self.edit_error_message = f"خطا: {response.text}"
         except Exception as e:
@@ -203,6 +205,7 @@ class DashboardState(rx.State):
                 if response.status_code == 200:
                     self.action_message = "سرویس با موفقیت حذف شد."
                     self.action_status = "success"
+                    return rx.window_alert("سرویس با موفقیت حذف شد.")
                 else:
                     self.action_message = f"خطا در حذف: {response.text}"
                     self.action_status = "error"
@@ -229,6 +232,7 @@ class DashboardState(rx.State):
                     data = response.json()
                     self.action_message = data.get("message", "عملیات با موفقیت انجام شد.")
                     self.action_status = "success"
+                    return rx.window_alert("سرویس‌های غیرفعال با موفقیت حذف شدند.")
                 else:
                     self.action_message = f"خطا در حذف گروهی: {response.text}"
                     self.action_status = "error"
