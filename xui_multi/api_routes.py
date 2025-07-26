@@ -55,8 +55,7 @@ async def get_current_user(x_api_authorization: Annotated[str, Header()]):
 async def create_service(
     request: Request,
     service_data: CreateServiceRequest,
-    creator: User = Depends(get_current_user),
-    is_auth: bool = Depends(verify_api_key)
+    creator: User = Depends(get_current_user)
 ):
     """یک سرویس جدید با کانفیگ‌های مربوطه ایجاد می‌کند."""
     with service_creation_lock:
@@ -144,8 +143,7 @@ async def create_service(
 async def update_service(
     service_uuid: str,
     update_data: ServiceUpdateRequest,
-    current_user: User = Depends(get_current_user),
-    is_auth: bool = Depends(verify_api_key)
+    current_user: User = Depends(get_current_user)
 ):
     """یک سرویس موجود را آپدیت می‌کند."""
     with rx.session() as session:
@@ -182,8 +180,7 @@ async def update_service(
 @api.delete("/service/{service_uuid}")
 async def delete_service(
     service_uuid: str,
-    current_user: User = Depends(get_current_user),
-    is_auth: bool = Depends(verify_api_key)
+    current_user: User = Depends(get_current_user)
 ):
     """یک سرویس و تمام کانفیگ‌های مرتبط با آن را حذف می‌کند."""
     with rx.session() as session:
@@ -215,8 +212,7 @@ async def delete_service(
 
 @api.delete("/services/inactive")
 async def delete_inactive_services(
-    current_user: User = Depends(get_current_user),
-    is_auth: bool = Depends(verify_api_key)
+    current_user: User = Depends(get_current_user)
 ):
     """تمام سرویس‌های غیرفعال را حذف می‌کند (فقط ادمین اصلی)."""
     if current_user.username != "hkhatiri":
@@ -261,3 +257,26 @@ async def delete_inactive_services(
         raise HTTPException(status_code=500, detail={"message": "برخی از سرویس‌ها حذف نشدند.", "errors": errors})
 
     return {"status": "success", "message": f"{deleted_count} سرویس غیرفعال با موفقیت حذف شد."}
+
+
+@api.get("/service/{service_uuid}/stats")
+async def get_service_stats(service_uuid: str,current_user: User = Depends(get_current_user)):
+    """
+    زمان و حجم باقی‌مانده یک سرویس را برمی‌گرداند.
+    """
+    with rx.session() as session:
+        service = session.exec(select(ManagedService).where(ManagedService.uuid == service_uuid)).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="سرویس یافت نشد.")
+
+        if service.created_by_id != current_user.id and current_user.username != "hkhatiri":
+            raise HTTPException(status_code=403, detail="شما اجازه دسترسی به این سرویس را ندارید.")
+
+        remaining_gb = service.data_limit_gb - service.data_used_gb
+        remaining_days = (service.end_date - datetime.now()).days if service.end_date > datetime.now() else 0
+
+        return {
+            "remaining_gb": round(remaining_gb, 2),
+            "remaining_days": remaining_days,
+            "status": service.status
+        }
