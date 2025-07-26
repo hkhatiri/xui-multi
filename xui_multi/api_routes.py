@@ -1,13 +1,19 @@
-from fastapi import FastAPI, Request, HTTPException, Depends
+# xui_multi/api_routes.py
+
+from fastapi import FastAPI, Request, HTTPException, Depends, Header
 import pydantic
 import reflex as rx
-from typing import List
+from typing import List, Annotated
 from datetime import datetime, timedelta
 from uuid import uuid4
 import base64
 import os
 import threading
 import json
+import traceback
+
+from sqlmodel import select
+
 from .models import ManagedService, Panel, PanelConfig, User
 from .xui_client import XUIClient
 
@@ -23,37 +29,46 @@ class ServiceUpdateRequest(pydantic.BaseModel):
     duration_days: int
     data_limit_gb: int
 
+# --- توابع وابستگی برای احراز هویت ---
+
 async def verify_api_key(request: Request):
+    """کلید اصلی API برنامه را بررسی می‌کند."""
     api_key = request.headers.get("X-API-KEY")
     if api_key != "SECRET_KEY_12345":
         raise HTTPException(status_code=401, detail="Invalid API Key")
     return True
 
+async def get_current_user(x_api_authorization: Annotated[str, Header()]):
+    """کاربر را بر اساس کلید API اختصاصی‌اش از هدر پیدا کرده و برمی‌گرداند."""
+    if not x_api_authorization:
+        raise HTTPException(status_code=401, detail="Missing X-API-Authorization header")
+
+    with rx.session() as session:
+        user = session.exec(select(User).where(User.api_key == x_api_authorization)).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid User API Key")
+        return user
+
+# --- مسیرهای API ---
+
 @api.post("/service")
-async def create_service(request: Request, service_data: CreateServiceRequest, is_auth: bool = Depends(verify_api_key)):
+async def create_service(
+    request: Request,
+    service_data: CreateServiceRequest,
+    creator: User = Depends(get_current_user),
+    is_auth: bool = Depends(verify_api_key)
+):
+    """یک سرویس جدید با کانفیگ‌های مربوطه ایجاد می‌کند."""
     with service_creation_lock:
         with rx.session() as session:
-            # Get the current user from the token
-            token = request.headers.get("Authorization", "").replace("Bearer ", "")
-            if not token:
-                raise HTTPException(status_code=401, detail="Missing authorization token")
-
-            creator = session.query(User).filter(User.username == token).first()
-            if not creator:
-                raise HTTPException(status_code=401, detail="Invalid authorization token")
-
             all_panels = session.query(Panel).all()
             if not all_panels:
-                raise HTTPException(status_code=500, detail="No panels configured.")
-
-            panels_data = [
-                {"id": p.id, "url": p.url, "username": p.username, "password": p.password, "domain": p.domain, "remark_prefix": p.remark_prefix}
-                for p in all_panels
-            ]
+                raise HTTPException(status_code=500, detail="هیچ پنلی در سیستم تعریف نشده است.")
 
             service_uuid = str(uuid4())
             start = datetime.now()
             end = start + timedelta(days=service_data.duration_days)
+
             managed_service = ManagedService(
                 name=service_data.name,
                 uuid=service_uuid,
@@ -67,59 +82,48 @@ async def create_service(request: Request, service_data: CreateServiceRequest, i
 
             all_configs_list = []
             base_port = 20000
-            for panel_data in panels_data:
+            for panel in all_panels:
                 try:
-                    client = XUIClient(panel_data['url'], panel_data['username'], panel_data['password'])
+                    client = XUIClient(panel.url, panel.username, panel.password)
                     used_ports = set(client.get_used_ports())
 
                     vless_port = base_port
                     while vless_port in used_ports:
                         vless_port += 1
-
+                    
                     shadowsocks_port = vless_port + 1
                     while shadowsocks_port in used_ports:
                         shadowsocks_port += 1
 
-                    remark = f"{panel_data['remark_prefix']}-{creator.remark}"
-                    vless_remark = f"{remark}-{vless_port}"
+                    remark_with_user = f"{panel.remark_prefix}-{creator.remark}"
+                    
+                    vless_remark = f"{remark_with_user}-{vless_port}"
                     vless_result = client.create_vless_inbound(
                         remark=vless_remark,
-                        domain=panel_data['domain'],
+                        domain=panel.domain,
                         port=vless_port,
                         expiry_days=service_data.duration_days,
                         limit_gb=service_data.data_limit_gb
                     )
 
-                    shadowsocks_remark = f"{remark}-{shadowsocks_port}"
+                    shadowsocks_remark = f"{remark_with_user}-{shadowsocks_port}"
                     shadowsocks_result = client.create_shadowsocks_inbound(
                         remark=shadowsocks_remark,
-                        domain=panel_data['domain'],
+                        domain=panel.domain,
                         port=shadowsocks_port,
                         expiry_days=service_data.duration_days,
                         limit_gb=service_data.data_limit_gb
                     )
 
-                    vless_panel_config = PanelConfig(
-                        managed_service_id=managed_service.id,
-                        panel_id=panel_data['id'],
-                        panel_inbound_id=vless_result["inbound_id"],
-                        config_link=vless_result["link"]
-                    )
-                    ss_panel_config = PanelConfig(
-                        managed_service_id=managed_service.id,
-                        panel_id=panel_data['id'],
-                        panel_inbound_id=shadowsocks_result["inbound_id"],
-                        config_link=shadowsocks_result["link"]
-                    )
-                    session.add(vless_panel_config)
-                    session.add(ss_panel_config)
+                    vless_panel_config = PanelConfig(managed_service_id=managed_service.id, panel_id=panel.id, panel_inbound_id=vless_result["inbound_id"], config_link=vless_result["link"])
+                    ss_panel_config = PanelConfig(managed_service_id=managed_service.id, panel_id=panel.id, panel_inbound_id=shadowsocks_result["inbound_id"], config_link=shadowsocks_result["link"])
+                    session.add_all([vless_panel_config, ss_panel_config])
 
-                    all_configs_list.append(vless_result["link"])
-                    all_configs_list.append(shadowsocks_result["link"])
+                    all_configs_list.extend([vless_result["link"], shadowsocks_result["link"]])
 
                 except Exception as e:
                     session.rollback()
-                    raise HTTPException(status_code=500, detail=f"Failed on panel {panel_data['url']}: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"خطا در ایجاد کانفیگ روی پنل {panel.url}: {e}")
 
             subscription_content = "\n".join(all_configs_list)
             base64_content = base64.b64encode(subscription_content.encode('utf-8')).decode('utf-8')
@@ -128,95 +132,96 @@ async def create_service(request: Request, service_data: CreateServiceRequest, i
             file_path = os.path.join(subs_dir, f"{service_uuid}.txt")
             with open(file_path, "w") as f:
                 f.write(base64_content)
-
-            base_url = str(request.base_url)
-            subscription_url = f"{base_url}static/subs/{service_uuid}.txt"
+            
+            base_url = str(request.base_url).rstrip('/')
+            subscription_url = f"{base_url}/static/subs/{service_uuid}.txt"
             managed_service.subscription_link = subscription_url
             session.commit()
-
-            return {
-                "status": "success",
-                "subscription_link": subscription_url
-            }
-
+            
+            return {"status": "success", "subscription_link": subscription_url}
 
 @api.put("/service/{service_uuid}")
-async def update_service(service_uuid: str, update_data: ServiceUpdateRequest, is_auth: bool = Depends(verify_api_key)):
+async def update_service(
+    service_uuid: str,
+    update_data: ServiceUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    is_auth: bool = Depends(verify_api_key)
+):
+    """یک سرویس موجود را آپدیت می‌کند."""
     with rx.session() as session:
-        service = session.query(ManagedService).filter(ManagedService.uuid == service_uuid).first()
+        service = session.exec(select(ManagedService).where(ManagedService.uuid == service_uuid)).first()
         if not service:
-            raise HTTPException(status_code=404, detail="Service not found")
+            raise HTTPException(status_code=404, detail="سرویس یافت نشد.")
 
-        panel_configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
+        if service.created_by_id != current_user.id:
+            raise HTTPException(status_code=403, detail="شما اجازه دسترسی به این سرویس را ندارید.")
 
-        # ---> اصلاحیه نهایی: محاسبه حجم و زمان به صورت جایگزینی <---
-        new_total_gb = update_data.data_limit_gb
-        new_total_gb_bytes = int(new_total_gb * 1024 * 1024 * 1024)
-
-        # زمان انقضای جدید از همین لحظه محاسبه می‌شود
+        new_total_gb_bytes = int(update_data.data_limit_gb * 1024 * 1024 * 1024)
         new_end_date = datetime.now() + timedelta(days=update_data.duration_days)
         new_expiry_time_ms = int(new_end_date.timestamp() * 1000)
 
-        for p_config in panel_configs:
+        for p_config in service.configs:
             try:
-                panel = session.query(Panel).filter(Panel.id == p_config.panel_id).one()
+                panel = p_config.panel
                 client = XUIClient(panel.url, panel.username, panel.password)
-
                 client.update_inbound(
                     inbound_id=p_config.panel_inbound_id,
                     new_total_gb=new_total_gb_bytes,
                     new_expiry_time_ms=new_expiry_time_ms
                 )
-
             except Exception as e:
-                import traceback
-                raise HTTPException(status_code=500, detail=f"Failed to update on panel {panel.url}: {traceback.format_exc()}")
+                print(f"خطا در آپدیت کانفیگ روی پنل {p_config.panel.url}: {e}")
+                # ادامه می‌دهیم تا پنل‌های دیگر آپدیت شوند
 
-        # آپدیت مقادیر نهایی در دیتابیس محلی
-        service.data_limit_gb = new_total_gb
+        service.data_limit_gb = update_data.data_limit_gb
         service.end_date = new_end_date
         session.commit()
 
-        return {"status": "success", "message": f"Service {service_uuid} updated successfully."}
-
+        return {"status": "success", "message": f"سرویس {service_uuid} با موفقیت آپدیت شد."}
 
 @api.delete("/service/{service_uuid}")
-async def delete_service(service_uuid: str, is_auth: bool = Depends(verify_api_key)):
-    try:
-        with rx.session() as session:
-            service = session.query(ManagedService).filter(ManagedService.uuid == service_uuid).first()
-            if not service:
-                raise HTTPException(status_code=404, detail="Service not found")
+async def delete_service(
+    service_uuid: str,
+    current_user: User = Depends(get_current_user),
+    is_auth: bool = Depends(verify_api_key)
+):
+    """یک سرویس و تمام کانفیگ‌های مرتبط با آن را حذف می‌کند."""
+    with rx.session() as session:
+        service = session.exec(select(ManagedService).where(ManagedService.uuid == service_uuid)).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="سرویس یافت نشد.")
 
-            panel_configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
+        if service.created_by_id != current_user.id:
+            raise HTTPException(status_code=403, detail="شما اجازه دسترسی به این سرویس را ندارید.")
 
-            for p_config in panel_configs:
-                try:
-                    panel = session.query(Panel).filter(Panel.id == p_config.panel_id).one()
-                    client = XUIClient(panel.url, panel.username, panel.password)
-                    client.delete_inbound(p_config.panel_inbound_id)
-                except Exception as e:
-                    print(f"NON-FATAL ERROR: Could not delete inbound {p_config.panel_inbound_id} from panel {panel.url}: {e}")
+        for p_config in service.configs:
+            try:
+                panel = p_config.panel
+                client = XUIClient(panel.url, panel.username, panel.password)
+                client.delete_inbound(p_config.panel_inbound_id)
+            except Exception as e:
+                print(f"خطای غیربحرانی: حذف کانفیگ {p_config.panel_inbound_id} از پنل {panel.url} با مشکل مواجه شد: {e}")
+            session.delete(p_config)
+        
+        if service.subscription_link:
+            file_name = service.subscription_link.split("/")[-1]
+            file_path = os.path.join("static/subs", file_name)
+            if os.path.exists(file_path):
+                os.remove(file_path)
 
-                session.delete(p_config)
-
-            if service.subscription_link:
-                file_name = service.subscription_link.split("/")[-1]
-                file_path = os.path.join("static/subs", file_name)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-
-            session.delete(service)
-            session.commit()
-        return {"status": "success", "message": f"Service {service_uuid} deleted."}
-    except Exception as e:
-        import traceback
-        tb_str = traceback.format_exc()
-        raise HTTPException(status_code=500, detail=f"A critical error occurred: {str(e)}\nTraceback:\n{tb_str}")
-
+        session.delete(service)
+        session.commit()
+        return {"status": "success", "message": f"سرویس {service_uuid} با موفقیت حذف شد."}
 
 @api.delete("/services/inactive")
-async def delete_inactive_services(is_auth: bool = Depends(verify_api_key)):
+async def delete_inactive_services(
+    current_user: User = Depends(get_current_user),
+    is_auth: bool = Depends(verify_api_key)
+):
+    """تمام سرویس‌های غیرفعال را حذف می‌کند (فقط ادمین اصلی)."""
+    if current_user.username != "hkhatiri":
+        raise HTTPException(status_code=403, detail="شما اجازه انجام این عملیات را ندارید.")
+
     deleted_count = 0
     errors = []
     with rx.session() as session:
@@ -225,22 +230,19 @@ async def delete_inactive_services(is_auth: bool = Depends(verify_api_key)):
         ).all()
 
         if not inactive_services:
-            return {"status": "success", "message": "No inactive services to delete.", "deleted_count": 0}
+            return {"status": "success", "message": "هیچ سرویس غیرفعالی برای حذف وجود ندارد.", "deleted_count": 0}
 
         for service in inactive_services:
             try:
-                panel_configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
-
-                for p_config in panel_configs:
+                for p_config in service.configs:
                     try:
-                        panel = session.query(Panel).filter(Panel.id == p_config.panel_id).one()
+                        panel = p_config.panel
                         client = XUIClient(panel.url, panel.username, panel.password)
                         client.delete_inbound(p_config.panel_inbound_id)
                     except Exception as e:
-                        print(f"NON-FATAL: Could not delete inbound {p_config.panel_inbound_id} from panel {panel.url}: {e}")
-
+                        print(f"خطای غیربحرانی: حذف کانفیگ {p_config.panel_inbound_id} از پنل {panel.url} با مشکل مواجه شد: {e}")
                     session.delete(p_config)
-
+                
                 if service.subscription_link:
                     file_name = service.subscription_link.split("/")[-1]
                     file_path = os.path.join("static/subs", file_name)
@@ -250,12 +252,12 @@ async def delete_inactive_services(is_auth: bool = Depends(verify_api_key)):
                 session.delete(service)
                 deleted_count += 1
             except Exception as e:
-                errors.append(f"Failed to delete service {service.uuid}: {e}")
+                errors.append(f"خطا در حذف سرویس {service.uuid}: {e}")
                 session.rollback()
 
         session.commit()
 
     if errors:
-        raise HTTPException(status_code=500, detail={"message": "Some services could not be deleted.", "errors": errors})
+        raise HTTPException(status_code=500, detail={"message": "برخی از سرویس‌ها حذف نشدند.", "errors": errors})
 
-    return {"status": "success", "message": f"Successfully deleted {deleted_count} inactive services."}
+    return {"status": "success", "message": f"{deleted_count} سرویس غیرفعال با موفقیت حذف شد."}

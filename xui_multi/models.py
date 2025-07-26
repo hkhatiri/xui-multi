@@ -10,6 +10,7 @@ class User(SQLModel, table=True):
     username: str = Field(unique=True, index=True)
     password_hash: str
     remark: Optional[str] = Field(default=None)
+    api_key: Optional[str] = Field(default=None, unique=True, index=True) # <<< این خط اضافه شد
 
 class ManagedService(rx.Model, table=True):
     name: str

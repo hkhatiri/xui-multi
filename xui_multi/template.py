@@ -25,13 +25,14 @@ def sidebar() -> rx.Component:
     """The sidebar for the app."""
     return rx.vstack(
         rx.image(src="/logo2.png"),
+        rx.avatar(fallback=AuthState.username, weight="bold", width="100%"),
         rx.hstack(
             rx.icon("bar-chart-big", size=32),
             rx.heading("XUI-Multi", size="7"),
             align="center",
             width="100%",
             padding_bottom="1em"
-        ),
+        ),      
         rx.divider(),
         sidebar_link("داشبورد اصلی", "/", "layout-dashboard"),
         sidebar_link("مدیریت سرویس‌ها", "/dashboard", "users"),
@@ -45,7 +46,6 @@ def sidebar() -> rx.Component:
 
         rx.spacer(),
         rx.hstack(
-            rx.avatar(fallback=AuthState.username, weight="bold"),
             rx.vstack(
                 rx.button(
                     "خروج از حساب",

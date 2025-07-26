@@ -1,62 +1,49 @@
 import reflex as rx
 from sqlmodel import select, func
 from typing import List, Optional
+import secrets  # <<< این ماژول برای تولید کلید امن اضافه شد
 
 from .models import User, ManagedService
 from .auth_state import AuthState, hash_password
 
-# --- State for Admin Management ---
 class AdminState(AuthState):
-    """State for managing admin users."""
     users: List[User] = []
     service_counts: dict[int, int] = {}
     total_volumes: dict[int, float] = {}
     show_dialog: bool = False
     admin_to_edit: Optional[User] = None
 
-    # --- NEW COMPUTED VAR TO FIX WARNING ---
     @rx.var
     def form_remark(self) -> str:
-        """Safely returns the remark for the form, handling None cases."""
         if self.admin_to_edit:
             return self.admin_to_edit.remark or ""
         return ""
-    # ----------------------------------------
 
     def on_load(self):
-        """Load users when the page opens."""
         self.check_auth()
         self.load_users()
 
     def load_users(self):
-        """Loads users from the database, filtering out the primary admin."""
         with rx.session() as session:
-            self.users = session.exec(
-                select(User).where(User.username != "hkhatiri")
-            ).all()
-
+            self.users = session.exec(select(User).where(User.username != "hkhatiri")).all()
             for user in self.users:
                 self.service_counts[user.id] = session.query(ManagedService).filter(ManagedService.created_by_id == user.id).count()
                 self.total_volumes[user.id] = session.query(func.sum(ManagedService.data_limit_gb)).filter(ManagedService.created_by_id == user.id).scalar() or 0.0
 
     def change_dialog_state(self, show: bool):
-        """Opens or closes the dialog and resets the form."""
         self.show_dialog = show
         if not show:
             self.admin_to_edit = None
 
     def show_add_dialog(self):
-        """Prepares the dialog for adding a new user."""
         self.admin_to_edit = None
         self.show_dialog = True
 
     def show_edit_dialog(self, user: User):
-        """Prepares the dialog for editing an existing user."""
         self.admin_to_edit = user
         self.show_dialog = True
 
     def save_admin(self, form_data: dict):
-        """Saves a new user or updates an existing one."""
         self.check_auth()
         username = form_data.get("username")
         password = form_data.get("password")
@@ -80,8 +67,11 @@ class AdminState(AuthState):
                 existing = session.exec(select(User).where(User.username == username)).first()
                 if existing:
                     return rx.window_alert(f"کاربری با نام '{username}' از قبل وجود دارد.")
+                
+                # <<< تولید و ذخیره کلید API هنگام ساخت کاربر جدید >>>
                 hashed_pw = hash_password(password)
-                new_user = User(username=username, password_hash=hashed_pw, remark=remark)
+                api_key = secrets.token_hex(20)  # تولید یک کلید 40 کاراکتری
+                new_user = User(username=username, password_hash=hashed_pw, remark=remark, api_key=api_key)
                 session.add(new_user)
             session.commit()
 
@@ -89,7 +79,6 @@ class AdminState(AuthState):
         self.load_users()
 
     def delete_user(self, user_id: int):
-        """Deletes a user from the database."""
         self.check_auth()
         with rx.session() as session:
             user_to_delete = session.get(User, user_id)
@@ -97,6 +86,10 @@ class AdminState(AuthState):
                 session.delete(user_to_delete)
                 session.commit()
             self.load_users()
+
+    def copy_to_clipboard(self, text: str):
+        """یک تابع کمکی برای کپی کردن متن."""
+        return rx.call_script(f"navigator.clipboard.writeText('{text}')")
 
 # --- UI Components ---
 def add_edit_admin_dialog() -> rx.Component:
@@ -173,9 +166,12 @@ def admin_table() -> rx.Component:
                                 rx.dropdown_menu.item(rx.hstack(rx.icon("pencil", size=16), rx.text("ویرایش")), on_click=lambda: AdminState.show_edit_dialog(user)),
                                 rx.dropdown_menu.separator(),
                                 rx.dropdown_menu.item(rx.hstack(rx.icon("trash-2", size=16), rx.text("حذف")), color="red", on_click=lambda: AdminState.delete_user(user.id)),
-                            ),
+                                rx.dropdown_menu.item(rx.hstack(rx.icon("copy",size=16),rx.text("کپی کد"),color="blue",on_click=lambda: AdminState.copy_to_clipboard(user.api_key),variant="ghost",size="1"),
+                                align="center",
+                                spacing="2"
+                            )
+                            )
                         ),
-                        text_align="center",
                     ),
                     rx.table.cell(user.username),
                     rx.table.cell(user.remark),
