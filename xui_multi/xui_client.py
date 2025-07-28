@@ -1,3 +1,5 @@
+# xui_multi/xui_client.py
+
 import base64
 import httpx
 import json
@@ -47,9 +49,14 @@ class XUIClient:
             print(f"Error getting inbound {inbound_id} from {self.base_url}: {e}")
             raise
 
-    def _construct_config_link(self, inbound_data, domain):
+    def _construct_config_link(self, inbound_data, domain, config_remark: Optional[str] = None):
         protocol = inbound_data.get("protocol")
-        remark = urllib.parse.quote(inbound_data.get("remark", ""))
+        
+        # اگر ریمارک برای کانفیگ مشخص نشده بود، از ریمارک خود inbound استفاده می‌شود
+        if config_remark is None:
+            config_remark = inbound_data.get("remark", "")
+            
+        remark = urllib.parse.quote(config_remark)
         port = inbound_data.get("port")
         settings_str = inbound_data.get("settings", "{}")
         settings = json.loads(settings_str)
@@ -66,7 +73,7 @@ class XUIClient:
 
         raise ValueError(f"Link construction for protocol '{protocol}' is not supported.")
 
-    def _create_inbound(self, payload, domain):
+    def _create_inbound(self, payload, domain, config_remark: Optional[str] = None):
         add_url = f"{self.base_url}/panel/inbound/add"
         with httpx.Client(cookies=self.session_cookie) as client:
             response = client.post(add_url, data=payload)
@@ -76,10 +83,10 @@ class XUIClient:
                 raise Exception(f"Failed to create inbound: {result.get('msg')}")
             inbound_id = self._get_id_from_remark(payload['remark'])
             inbound_data = self.get_inbound(inbound_id)
-            config_link = self._construct_config_link(inbound_data, domain)
+            config_link = self._construct_config_link(inbound_data, domain, config_remark)
             return {"link": config_link, "inbound_id": inbound_id}
 
-    def create_vless_inbound(self, remark, domain, port, expiry_days, limit_gb, expiry_time_ms: Optional[int] = None, total_gb_bytes: Optional[int] = None):
+    def create_vless_inbound(self, remark, domain, port, expiry_days, limit_gb, config_remark: Optional[str] = None, expiry_time_ms: Optional[int] = None, total_gb_bytes: Optional[int] = None):
         if expiry_time_ms is None:
             expiry_time_ms = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
         if total_gb_bytes is None:
@@ -97,9 +104,9 @@ class XUIClient:
             "streamSettings": json.dumps(stream_settings),
             "sniffing": json.dumps(sniffing)
         }
-        return self._create_inbound(inbound_payload, domain)
+        return self._create_inbound(inbound_payload, domain, config_remark)
 
-    def create_shadowsocks_inbound(self, remark, domain, port, expiry_days, limit_gb, expiry_time_ms: Optional[int] = None, total_gb_bytes: Optional[int] = None):
+    def create_shadowsocks_inbound(self, remark, domain, port, expiry_days, limit_gb, config_remark: Optional[str] = None, expiry_time_ms: Optional[int] = None, total_gb_bytes: Optional[int] = None):
         if expiry_time_ms is None:
             expiry_time_ms = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
         if total_gb_bytes is None:
@@ -123,7 +130,7 @@ class XUIClient:
             "streamSettings": json.dumps(stream_settings),
             "sniffing": json.dumps(sniffing)
         }
-        return self._create_inbound(inbound_payload, domain)
+        return self._create_inbound(inbound_payload, domain, config_remark)
 
     def update_inbound(self, inbound_id: int, new_total_gb: int, new_expiry_time_ms: int) -> bool:
         original_inbound = self.get_inbound(inbound_id)
@@ -206,7 +213,9 @@ class XUIClient:
                 response.raise_for_status()
                 data = response.json()
                 if data and data.get("success"):
-                    return len(data.get("obj", []))
+                    # FIX: Handle cases where 'obj' might be null in the response
+                    online_clients = data.get("obj")
+                    return len(online_clients or [])
                 return 0
         except Exception as e:
             print(f"Could not get online clients from {self.base_url}: {e}")

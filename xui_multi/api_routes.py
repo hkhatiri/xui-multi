@@ -94,24 +94,30 @@ async def create_service(
                     while shadowsocks_port in used_ports:
                         shadowsocks_port += 1
 
-                    remark_with_user = f"{panel.remark_prefix}-{creator.remark}"
+                    # --- FIX: New remark logic ---
+                    # 1. Remark for identification on the X-UI panel
+                    panel_side_remark_vless = f"{panel.remark_prefix}-{creator.username}-{vless_port}"
+                    panel_side_remark_ss = f"{panel.remark_prefix}-{creator.username}-{shadowsocks_port}"
+
+                    # 2. Final remark for the config link (prefix + user's sticker)
+                    config_link_remark = f"{panel.remark_prefix}{creator.remark}"
                     
-                    vless_remark = f"{remark_with_user}-{vless_port}"
                     vless_result = client.create_vless_inbound(
-                        remark=vless_remark,
+                        remark=panel_side_remark_vless,
                         domain=panel.domain,
                         port=vless_port,
                         expiry_days=service_data.duration_days,
-                        limit_gb=service_data.data_limit_gb
+                        limit_gb=service_data.data_limit_gb,
+                        config_remark=config_link_remark
                     )
 
-                    shadowsocks_remark = f"{remark_with_user}-{shadowsocks_port}"
                     shadowsocks_result = client.create_shadowsocks_inbound(
-                        remark=shadowsocks_remark,
+                        remark=panel_side_remark_ss,
                         domain=panel.domain,
                         port=shadowsocks_port,
                         expiry_days=service_data.duration_days,
-                        limit_gb=service_data.data_limit_gb
+                        limit_gb=service_data.data_limit_gb,
+                        config_remark=config_link_remark
                     )
 
                     vless_panel_config = PanelConfig(managed_service_id=managed_service.id, panel_id=panel.id, panel_inbound_id=vless_result["inbound_id"], config_link=vless_result["link"])
@@ -138,6 +144,8 @@ async def create_service(
             session.commit()
             
             return {"status": "success", "subscription_link": subscription_url}
+
+# ... (بقیه توابع API بدون تغییر باقی می‌مانند) ...
 
 @api.put("/service/{service_uuid}")
 async def update_service(
@@ -169,7 +177,6 @@ async def update_service(
                 )
             except Exception as e:
                 print(f"خطا در آپدیت کانفیگ روی پنل {p_config.panel.url}: {e}")
-                # ادامه می‌دهیم تا پنل‌های دیگر آپدیت شوند
 
         service.data_limit_gb = update_data.data_limit_gb
         service.end_date = new_end_date
@@ -257,7 +264,6 @@ async def delete_inactive_services(
         raise HTTPException(status_code=500, detail={"message": "برخی از سرویس‌ها حذف نشدند.", "errors": errors})
 
     return {"status": "success", "message": f"{deleted_count} سرویس غیرفعال با موفقیت حذف شد."}
-
 
 @api.get("/service/{service_uuid}/stats")
 async def get_service_stats(service_uuid: str,current_user: User = Depends(get_current_user)):

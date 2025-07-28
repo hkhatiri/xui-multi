@@ -3,6 +3,7 @@ assets/external/
 *.db
 .web
 .venv
+venv/
 .states
 __pycache__/
 alembic.ini

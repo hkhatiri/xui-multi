@@ -68,6 +68,9 @@ class DashboardState(AuthState):
     # --- تنظیمات API ---
     api_url: str = "http://localhost:8000"
     api_key: str = "SECRET_KEY_12345"
+    
+    # FIX: Add a state var to hold the current user's API key
+    user_api_key: str = ""
 
     @rx.var
     def total_pages(self) -> int:
@@ -96,6 +99,9 @@ class DashboardState(AuthState):
             creator = session.query(User).filter(User.username == self.token).first()
             if not creator:
                 return
+
+            # FIX: Store the user's API key in the state
+            self.user_api_key = creator.api_key or ""
 
             query = session.query(ManagedService).options(selectinload(ManagedService.configs))
 
@@ -156,7 +162,8 @@ class DashboardState(AuthState):
             self.create_error_message = "نام سرویس نمی‌تواند خالی باشد."
             return
         self.is_creating = True
-        headers = {"X-API-KEY": self.api_key, "Authorization": f"Bearer {self.token}"}
+        # FIX: Use the correct header 'x-api-authorization'
+        headers = {"X-API-KEY": self.api_key, "x-api-authorization": self.user_api_key}
         payload = {"name": self.new_service_name, "duration_days": self.new_service_duration, "data_limit_gb": self.new_service_limit}
         try:
             async with httpx.AsyncClient() as client:
@@ -185,7 +192,8 @@ class DashboardState(AuthState):
     async def handle_edit_service(self):
         self.is_editing = True
         self.edit_error_message = ""
-        headers = {"X-API-KEY": self.api_key, "Authorization": f"Bearer {self.token}"}
+        # FIX: Use the correct header 'x-api-authorization'
+        headers = {"X-API-KEY": self.api_key, "x-api-authorization": self.user_api_key}
         payload = {"duration_days": self.edit_duration, "data_limit_gb": self.edit_limit}
         uuid = self.service_to_edit.get("uuid")
         try:
@@ -212,7 +220,8 @@ class DashboardState(AuthState):
     async def handle_delete_service(self):
         self.is_deleting = True
         uuid = self.service_to_delete.get("uuid")
-        headers = {"X-API-KEY": self.api_key, "Authorization": f"Bearer {self.token}"}
+        # FIX: Use the correct header 'x-api-authorization'
+        headers = {"X-API-KEY": self.api_key, "x-api-authorization": self.user_api_key}
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.delete(f"{self.api_url}/service/{uuid}", headers=headers, timeout=60)
@@ -238,7 +247,8 @@ class DashboardState(AuthState):
     async def confirm_bulk_delete(self):
         self.is_bulk_deleting = True
         self.show_bulk_delete_dialog = False
-        headers = {"X-API-KEY": self.api_key, "Authorization": f"Bearer {self.token}"}
+        # FIX: Use the correct header 'x-api-authorization'
+        headers = {"X-API-KEY": self.api_key, "x-api-authorization": self.user_api_key}
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.delete(f"{self.api_url}/services/inactive", headers=headers, timeout=120)
@@ -259,6 +269,8 @@ class DashboardState(AuthState):
 
     def copy_to_clipboard(self, text: str):
         return rx.call_script(f"""navigator.clipboard.writeText('{text}').then(() => {{ alert('لینک با موفقیت کپی شد!'); }},() => {{ alert('خطا در کپی کردن لینک.'); }});""")
+
+# --- (بقیه فایل services_page.py بدون تغییر باقی می‌ماند) ---
 
 # --- کامپوننت‌های مودال (Dialog) ---
 
@@ -332,12 +344,10 @@ def services_page() -> rx.Component:
             rx.hstack(
                 rx.tooltip(rx.icon_button(rx.icon("plus"), on_click=DashboardState.open_create_dialog, color_scheme="grass", variant="solid", size="3"), content="ساخت سرویس جدید"),
                 
-                # --- شرط نمایش دکمه حذف گروهی ---
                 rx.cond(
                     DashboardState.is_admin,
                     rx.tooltip(rx.icon_button(rx.icon("trash-2"), on_click=DashboardState.trigger_bulk_delete_dialog, color_scheme="ruby", variant="solid", size="3"), content="حذف سرویس‌های غیرفعال"),
                 ),
-                # ---------------------------------
                 
                 spacing="3",
             ),

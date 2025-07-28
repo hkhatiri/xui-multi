@@ -89,21 +89,35 @@ class PanelsState(AuthState):
 
 # --- State for Backups Page ---
 class PanelBackupsState(AuthState):
-    panel: Panel = Panel(id=0, url="", domain="", username="", password="", remark_prefix="")
+    panel: Optional[Panel] = None
     backup_views: List[Dict[str, Any]] = []
     is_backing_up: bool = False
 
     @rx.var
     def current_panel_id(self) -> str:
-        # --- REVERTED CHANGE ---
-        # This is the correct way for your version, which fixes the crash.
-        return self.router.page.params.get("panel_id", "0")
+        """
+        Extracts the panel_id from the URL path to avoid the DeprecationWarning.
+        This method is safer and stops the constant recompiling.
+        """
+        try:
+            # The warning suggests using self.router.url. It has a .path attribute.
+            path = self.router.url.path
+            # The expected path is /panels/{panel_id}/backups
+            parts = path.strip("/").split("/")
+            if len(parts) == 3 and parts[0] == "panels" and parts[2] == "backups":
+                # The middle part is the panel_id
+                return parts[1]
+        except Exception:
+            # If any error occurs (e.g., unexpected URL), return a default.
+            return "0"
+        return "0" # Default value if parsing fails
 
     def load_backups(self):
         self.check_auth()
         with rx.session() as session:
-            if self.current_panel_id.isdigit():
-                panel_id_int = int(self.current_panel_id)
+            panel_id_str = self.current_panel_id
+            if panel_id_str.isdigit():
+                panel_id_int = int(panel_id_str)
                 self.panel = session.get(Panel, panel_id_int)
                 if self.panel:
                     backups_from_db = session.exec(select(Backup).where(Backup.panel_id == panel_id_int).order_by(Backup.created_at.desc())).all()
@@ -258,31 +272,41 @@ def panels_page() -> rx.Component:
 
 def backups_page() -> rx.Component:
     return rx.container(
-        rx.vstack(
-            rx.hstack(
-                rx.heading("لیست بکاپ‌های پنل: ", PanelBackupsState.panel.remark_prefix, size="7"),
-                rx.spacer(),
-                rx.cond(PanelBackupsState.is_admin, rx.button("ایجاد بکاپ جدید", icon="download-cloud", on_click=PanelBackupsState.manual_backup, loading=PanelBackupsState.is_backing_up, color_scheme="green")),
-                rx.link(rx.button("بازگشت"), href="/panels"),
-                align="center",
-                width="100%",
-                spacing="4"
-            ),
-            rx.divider(width="100%", margin_y="1.5em"),
-            rx.table.root(
-                rx.table.header(
-                    rx.table.row(
-                        rx.table.column_header_cell("عملیات", text_align="center", width="5%"),
-                        rx.table.column_header_cell("تاریخ ایجاد", text_align="center"),
-                        rx.table.column_header_cell("نام فایل", text_align="right"),
-                    )
+        rx.cond(
+            PanelBackupsState.panel,
+            rx.vstack(
+                rx.hstack(
+                    rx.heading("لیست بکاپ‌های پنل: ", PanelBackupsState.panel.remark_prefix, size="7"),
+                    rx.spacer(),
+                    rx.cond(PanelBackupsState.is_admin, rx.button("ایجاد بکاپ جدید", icon="download-cloud", on_click=PanelBackupsState.manual_backup, loading=PanelBackupsState.is_backing_up, color_scheme="green")),
+                    rx.link(rx.button("بازگشت"), href="/panels"),
+                    align="center",
+                    width="100%",
+                    spacing="4"
                 ),
-                rx.table.body(rx.foreach(PanelBackupsState.backup_views, backup_table_row)),
-                variant="surface"
+                rx.divider(width="100%", margin_y="1.5em"),
+                rx.table.root(
+                    rx.table.header(
+                        rx.table.row(
+                            rx.table.column_header_cell("عملیات", text_align="center", width="5%"),
+                            rx.table.column_header_cell("تاریخ ایجاد", text_align="center"),
+                            rx.table.column_header_cell("نام فایل", text_align="right"),
+                        )
+                    ),
+                    rx.table.body(rx.foreach(PanelBackupsState.backup_views, backup_table_row)),
+                    variant="surface"
+                ),
+                spacing="5",
+                width="100%",
+                padding_x="2em",
             ),
-            spacing="5",
-            width="100%",
-            padding_x="2em",
+            rx.center(
+                rx.vstack(
+                    rx.heading("درحال بارگذاری..."),
+                    rx.spinner(size="3"),
+                ),
+                height="50vh"
+            )
         ),
         on_mount=PanelBackupsState.load_backups,
     )
