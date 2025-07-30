@@ -43,6 +43,7 @@ class DashboardState(AuthState):
     new_service_name: str = ""
     new_service_duration: int = 30
     new_service_limit: int = 10
+    new_service_protocol: str = "vless"
     create_error_message: str = ""
     is_creating: bool = False
 
@@ -68,8 +69,6 @@ class DashboardState(AuthState):
     # --- تنظیمات API ---
     api_url: str = "http://localhost:8000"
     api_key: str = "SECRET_KEY_12345"
-    
-    # FIX: Add a state var to hold the current user's API key
     user_api_key: str = ""
 
     @rx.var
@@ -79,11 +78,18 @@ class DashboardState(AuthState):
             return 1
         return math.ceil(len(self.all_services) / self.items_per_page)
 
+    # --- Event Handlers ---
+    def set_new_service_name(self, name: str):
+        self.new_service_name = name
+
     def set_duration_from_slider(self, value: List[int | float]):
         self.new_service_duration = int(value[0])
 
     def set_limit_from_slider(self, value: List[int | float]):
         self.new_service_limit = int(value[0])
+
+    def set_new_service_protocol(self, protocol: str):
+        self.new_service_protocol = protocol
 
     def set_edit_duration_from_slider(self, value: List[int | float]):
         self.edit_duration = int(value[0])
@@ -100,9 +106,7 @@ class DashboardState(AuthState):
             if not creator:
                 return
 
-            # FIX: Store the user's API key in the state
             self.user_api_key = creator.api_key or ""
-
             query = session.query(ManagedService).options(selectinload(ManagedService.configs))
 
             if not self.is_admin:
@@ -113,9 +117,19 @@ class DashboardState(AuthState):
 
             services_from_db = query.order_by(ManagedService.id.desc()).all()
 
-            self.all_services = [
-                {
+            self.all_services = []
+            for s in services_from_db:
+                protocols = set()
+                for config in s.configs:
+                    if config.config_link.startswith("vless"):
+                        protocols.add("VLESS")
+                    elif config.config_link.startswith("ss"):
+                        protocols.add("SS")
+                protocol_str = " + ".join(sorted(list(protocols))) if protocols else "نامشخص"
+
+                self.all_services.append({
                     "name": s.name, "uuid": s.uuid, "status_en": s.status,
+                    "protocol": protocol_str,
                     "status_fa": STATUS_TRANSLATIONS.get(s.status, s.status),
                     "config_count": len(s.configs),
                     "data_usage": f"{s.data_used_gb:.2f} / {s.data_limit_gb} GB",
@@ -123,9 +137,7 @@ class DashboardState(AuthState):
                     "remaining_days": (s.end_date - datetime.datetime.now(s.end_date.tzinfo)).days if s.end_date else 0,
                     "remaining_time": format_remaining_time(s.end_date, s.status),
                     "subscription_link": s.subscription_link,
-                }
-                for s in services_from_db
-            ]
+                })
         self._paginate_services()
 
     def _paginate_services(self):
@@ -148,13 +160,13 @@ class DashboardState(AuthState):
         self.current_page = 1
         await self.load_and_filter_services()
 
-    # --- عملیات ساخت سرویس ---
     def open_create_dialog(self):
         self.show_create_dialog = True
         self.create_error_message = ""
         self.new_service_name = ""
         self.new_service_duration = 30
         self.new_service_limit = 10
+        self.new_service_protocol = "vless"
 
     async def handle_create_service(self):
         self.create_error_message = ""
@@ -162,13 +174,18 @@ class DashboardState(AuthState):
             self.create_error_message = "نام سرویس نمی‌تواند خالی باشد."
             return
         self.is_creating = True
-        # FIX: Use the correct header 'x-api-authorization'
         headers = {"X-API-KEY": self.api_key, "x-api-authorization": self.user_api_key}
-        payload = {"name": self.new_service_name, "duration_days": self.new_service_duration, "data_limit_gb": self.new_service_limit}
+        payload = {
+            "name": self.new_service_name,
+            "duration_days": self.new_service_duration,
+            "data_limit_gb": self.new_service_limit,
+            "protocol": self.new_service_protocol
+        }
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(f"{self.api_url}/service", headers=headers, json=payload, timeout=60)
+                response = await client.post(f"{self.api_url}/service", headers=headers, json=payload, timeout=90)
                 if response.status_code == 200:
+                    # --- FIX: بستن مودال قبل از نمایش پیغام ---
                     self.show_create_dialog = False
                     self.action_message = "سرویس با موفقیت ساخته شد."
                     self.action_status = "success"
@@ -181,7 +198,6 @@ class DashboardState(AuthState):
         finally:
             self.is_creating = False
 
-    # --- عملیات ویرایش سرویس ---
     def open_edit_dialog(self, service: Dict[str, Any]):
         self.service_to_edit = service
         self.edit_duration = service.get('remaining_days', 30)
@@ -192,7 +208,6 @@ class DashboardState(AuthState):
     async def handle_edit_service(self):
         self.is_editing = True
         self.edit_error_message = ""
-        # FIX: Use the correct header 'x-api-authorization'
         headers = {"X-API-KEY": self.api_key, "x-api-authorization": self.user_api_key}
         payload = {"duration_days": self.edit_duration, "data_limit_gb": self.edit_limit}
         uuid = self.service_to_edit.get("uuid")
@@ -200,6 +215,7 @@ class DashboardState(AuthState):
             async with httpx.AsyncClient() as client:
                 response = await client.put(f"{self.api_url}/service/{uuid}", headers=headers, json=payload, timeout=60)
                 if response.status_code == 200:
+                    # --- FIX: بستن مودال قبل از نمایش پیغام ---
                     self.show_edit_dialog = False
                     self.action_message = "سرویس با موفقیت ویرایش شد."
                     self.action_status = "success"
@@ -212,7 +228,6 @@ class DashboardState(AuthState):
         finally:
             self.is_editing = False
 
-    # --- عملیات حذف سرویس ---
     def open_delete_dialog(self, service: Dict[str, Any]):
         self.service_to_delete = service
         self.show_delete_dialog = True
@@ -220,14 +235,16 @@ class DashboardState(AuthState):
     async def handle_delete_service(self):
         self.is_deleting = True
         uuid = self.service_to_delete.get("uuid")
-        # FIX: Use the correct header 'x-api-authorization'
         headers = {"X-API-KEY": self.api_key, "x-api-authorization": self.user_api_key}
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.delete(f"{self.api_url}/service/{uuid}", headers=headers, timeout=60)
                 if response.status_code == 200:
+                    # --- FIX: بستن مودال قبل از نمایش پیغام ---
+                    self.show_delete_dialog = False
                     self.action_message = "سرویس با موفقیت حذف شد."
                     self.action_status = "success"
+                    await self.load_and_filter_services()
                     return rx.window_alert("سرویس با موفقیت حذف شد.")
                 else:
                     self.action_message = f"خطا در حذف: {response.text}"
@@ -237,40 +254,42 @@ class DashboardState(AuthState):
             self.action_status = "error"
         finally:
             self.is_deleting = False
-            self.show_delete_dialog = False
-            await self.load_and_filter_services()
+            # اگر عملیات موفق نبود، مودال باز بماند تا خطا نمایش داده شود
+            if self.action_status != "success":
+                self.show_delete_dialog = True
+            else:
+                self.show_delete_dialog = False
 
-    # --- عملیات حذف گروهی ---
+
     def trigger_bulk_delete_dialog(self):
         self.show_bulk_delete_dialog = True
 
     async def confirm_bulk_delete(self):
         self.is_bulk_deleting = True
-        self.show_bulk_delete_dialog = False
-        # FIX: Use the correct header 'x-api-authorization'
         headers = {"X-API-KEY": self.api_key, "x-api-authorization": self.user_api_key}
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.delete(f"{self.api_url}/services/inactive", headers=headers, timeout=120)
                 if response.status_code == 200:
+                    # --- FIX: بستن مودال قبل از نمایش پیغام ---
+                    self.show_bulk_delete_dialog = False
                     data = response.json()
                     self.action_message = data.get("message", "عملیات با موفقیت انجام شد.")
                     self.action_status = "success"
+                    await self.load_and_filter_services()
                     return rx.window_alert("سرویس‌های غیرفعال با موفقیت حذف شدند.")
                 else:
                     self.action_message = f"خطا در حذف گروهی: {response.text}"
                     self.action_status = "error"
-            await self.load_and_filter_services()
         except Exception as e:
             self.action_message = f"خطای ارتباطی: {e}"
             self.action_status = "error"
         finally:
             self.is_bulk_deleting = False
 
+
     def copy_to_clipboard(self, text: str):
         return rx.call_script(f"""navigator.clipboard.writeText('{text}').then(() => {{ alert('لینک با موفقیت کپی شد!'); }},() => {{ alert('خطا در کپی کردن لینک.'); }});""")
-
-# --- (بقیه فایل services_page.py بدون تغییر باقی می‌ماند) ---
 
 # --- کامپوننت‌های مودال (Dialog) ---
 
@@ -280,6 +299,20 @@ def create_service_dialog() -> rx.Component:
             rx.dialog.title("ساخت سرویس جدید"),
             rx.dialog.description("اطلاعات سرویس جدید را وارد کنید.", margin_bottom="1em"),
             rx.flex(rx.text("نام سرویس:", width="120px", as_="label"), rx.input(placeholder="مثلا: کاربر ۱", on_change=DashboardState.set_new_service_name), spacing="3", align="center"),
+            rx.flex(
+                rx.text("پروتکل:", width="120px", as_="label"),
+                rx.select.root(
+                    rx.select.trigger(placeholder="انتخاب پروتکل..."),
+                    rx.select.content(
+                        rx.select.item("VLESS", value="vless"),
+                        rx.select.item("ShadowSocks", value="shadowsocks"),
+                    ),
+                    on_change=DashboardState.set_new_service_protocol,
+                    value=DashboardState.new_service_protocol,
+                    default_value="vless"
+                ),
+                spacing="3", align="center", margin_top="1em"
+            ),
             rx.flex(rx.text("مدت زمان (روز):", width="120px", as_="label"), rx.slider(min=1, max=365, value=[DashboardState.new_service_duration], on_change=DashboardState.set_duration_from_slider), rx.text(DashboardState.new_service_duration, width="30px"), spacing="3", align="center", margin_top="1em"),
             rx.flex(rx.text("حجم (گیگابایت):", width="120px", as_="label"), rx.slider(min=1, max=1000, value=[DashboardState.new_service_limit], on_change=DashboardState.set_limit_from_slider), rx.text(DashboardState.new_service_limit, width="30px"), spacing="3", align="center", margin_top="1em"),
             rx.cond(DashboardState.create_error_message != "", rx.callout(DashboardState.create_error_message, icon="triangle_alert", color_scheme="red", margin_top="1em")),
@@ -409,7 +442,7 @@ def services_page() -> rx.Component:
                         rx.table.cell(rx.badge(service["remaining_time"], color_scheme="cyan", variant="soft"), text_align="center"),
                         rx.table.cell(rx.badge(service["data_usage"], color_scheme="blue", variant="soft"), text_align="center"),
                         rx.table.cell(rx.badge(service["config_count"], color_scheme="plum", variant="soft"), text_align="center"),
-                        rx.table.cell(rx.badge("VLESS + SS", color_scheme="iris", variant="soft"), text_align="center"),
+                        rx.table.cell(rx.badge(service["protocol"], color_scheme="iris", variant="soft"), text_align="center"),
                         rx.table.cell(rx.badge(service["status_fa"], color_scheme=rx.cond(service["status_en"] == 'active', "grass", "ruby"), variant="solid"), text_align="center"),
                         rx.table.cell(service["name"], text_align="right"),
                     )

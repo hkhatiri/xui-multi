@@ -70,8 +70,10 @@ class PanelsState(AuthState):
             session.add(panel_to_update)
             session.commit()
             session.refresh(panel_to_update)
-        self.load_panels_with_stats()
+
+        # --- FIX: بستن مودال قبل از نمایش پیغام ---
         self.show_dialog = False
+        self.load_panels_with_stats()
         return rx.window_alert("پنل با موفقیت ذخیره شد.")
 
     def delete_panel(self, panel_id: int):
@@ -95,22 +97,14 @@ class PanelBackupsState(AuthState):
 
     @rx.var
     def current_panel_id(self) -> str:
-        """
-        Extracts the panel_id from the URL path to avoid the DeprecationWarning.
-        This method is safer and stops the constant recompiling.
-        """
         try:
-            # The warning suggests using self.router.url. It has a .path attribute.
-            path = self.router.url.path
-            # The expected path is /panels/{panel_id}/backups
+            path = self.router.page.path
             parts = path.strip("/").split("/")
             if len(parts) == 3 and parts[0] == "panels" and parts[2] == "backups":
-                # The middle part is the panel_id
                 return parts[1]
         except Exception:
-            # If any error occurs (e.g., unexpected URL), return a default.
             return "0"
-        return "0" # Default value if parsing fails
+        return "0"
 
     def load_backups(self):
         self.check_auth()

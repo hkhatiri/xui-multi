@@ -1,7 +1,9 @@
+# xui_multi/admin_page.py
+
 import reflex as rx
 from sqlmodel import select, func
 from typing import List, Optional
-import secrets  # <<< این ماژول برای تولید کلید امن اضافه شد
+import secrets
 
 from .models import User, ManagedService
 from .auth_state import AuthState, hash_password
@@ -68,15 +70,17 @@ class AdminState(AuthState):
                 if existing:
                     return rx.window_alert(f"کاربری با نام '{username}' از قبل وجود دارد.")
                 
-                # <<< تولید و ذخیره کلید API هنگام ساخت کاربر جدید >>>
                 hashed_pw = hash_password(password)
-                api_key = secrets.token_hex(20)  # تولید یک کلید 40 کاراکتری
+                api_key = secrets.token_hex(20)
                 new_user = User(username=username, password_hash=hashed_pw, remark=remark, api_key=api_key)
                 session.add(new_user)
             session.commit()
 
+        # --- FIX: بستن مودال قبل از نمایش پیغام ---
         self.show_dialog = False
         self.load_users()
+        return rx.window_alert("ادمین با موفقیت ذخیره شد.")
+
 
     def delete_user(self, user_id: int):
         self.check_auth()
@@ -86,6 +90,7 @@ class AdminState(AuthState):
                 session.delete(user_to_delete)
                 session.commit()
             self.load_users()
+        return rx.window_alert("ادمین با موفقیت حذف شد.")
 
     def copy_to_clipboard(self, text: str):
         """یک تابع کمکی برای کپی کردن متن."""
@@ -114,7 +119,6 @@ def add_edit_admin_dialog() -> rx.Component:
                     rx.input(
                         placeholder="ریمارک",
                         name="remark",
-                        # --- USE THE NEW COMPUTED VAR ---
                         default_value=AdminState.form_remark,
                         required=True,
                     ),

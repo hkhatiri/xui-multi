@@ -1,16 +1,13 @@
-# xui_multi/api_routes.py
-
 from fastapi import FastAPI, Request, HTTPException, Depends, Header
 import pydantic
 import reflex as rx
-from typing import List, Annotated
+from typing import List, Annotated, Literal # Literal برای محدود کردن مقادیر ورودی اضافه شد
 from datetime import datetime, timedelta
 from uuid import uuid4
 import base64
 import os
 import threading
-import json
-import traceback
+import time
 
 from sqlmodel import select
 
@@ -19,24 +16,19 @@ from .xui_client import XUIClient
 
 api = FastAPI()
 service_creation_lock = threading.Lock()
-
-class CreateServiceRequest(pydantic.BaseModel):
-    name: str
-    duration_days: float
-    data_limit_gb: float
+MAX_RETRIES = 3  # حداکثر تعداد تلاش برای ساخت کانفیگ روی یک پنل
 
 class ServiceUpdateRequest(pydantic.BaseModel):
     duration_days: int
     data_limit_gb: int
 
-# --- توابع وابستگی برای احراز هویت ---
-
-async def verify_api_key(request: Request):
-    """کلید اصلی API برنامه را بررسی می‌کند."""
-    api_key = request.headers.get("X-API-KEY")
-    if api_key != "SECRET_KEY_12345":
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-    return True
+# --- مدل درخواست ساخت سرویس با پروتکل مشخص و محدود ---
+class CreateServiceRequest(pydantic.BaseModel):
+    name: str
+    duration_days: float
+    data_limit_gb: float
+    # پروتکل فقط می‌تواند یکی از این دو مقدار باشد
+    protocol: Literal["vless", "shadowsocks"]
 
 async def get_current_user(x_api_authorization: Annotated[str, Header()]):
     """کاربر را بر اساس کلید API اختصاصی‌اش از هدر پیدا کرده و برمی‌گرداند."""
@@ -50,14 +42,13 @@ async def get_current_user(x_api_authorization: Annotated[str, Header()]):
         return user
 
 # --- مسیرهای API ---
-
 @api.post("/service")
 async def create_service(
     request: Request,
     service_data: CreateServiceRequest,
     creator: User = Depends(get_current_user)
 ):
-    """یک سرویس جدید با کانفیگ‌های مربوطه ایجاد می‌کند."""
+    """یک سرویس جدید با کانفیگ مربوط به پروتکل درخواستی ایجاد می‌کند."""
     with service_creation_lock:
         with rx.session() as session:
             all_panels = session.query(Panel).all()
@@ -69,12 +60,8 @@ async def create_service(
             end = start + timedelta(days=service_data.duration_days)
 
             managed_service = ManagedService(
-                name=service_data.name,
-                uuid=service_uuid,
-                start_date=start,
-                end_date=end,
-                data_limit_gb=service_data.data_limit_gb,
-                created_by_id=creator.id,
+                name=service_data.name, uuid=service_uuid, start_date=start,
+                end_date=end, data_limit_gb=service_data.data_limit_gb, created_by_id=creator.id,
             )
             session.add(managed_service)
             session.flush()
@@ -82,53 +69,47 @@ async def create_service(
             all_configs_list = []
             base_port = 20000
             for panel in all_panels:
-                try:
-                    client = XUIClient(panel.url, panel.username, panel.password)
-                    used_ports = set(client.get_used_ports())
+                last_exception = None
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        client = XUIClient(panel.url, panel.username, panel.password)
+                        used_ports = set(client.get_used_ports())
+                        config_link_remark = f"{panel.remark_prefix}{creator.remark}"
+                        
+                        port = base_port
+                        while port in used_ports:
+                            port += 1
+                        used_ports.add(port)
+                        panel_side_remark = f"{panel.remark_prefix}-{creator.username}-{port}"
 
-                    vless_port = base_port
-                    while vless_port in used_ports:
-                        vless_port += 1
+                        if service_data.protocol == "vless":
+                            result = client.create_vless_inbound(
+                                remark=panel_side_remark, domain=panel.domain, port=port,
+                                expiry_days=service_data.duration_days, limit_gb=service_data.data_limit_gb,
+                                config_remark=config_link_remark
+                            )
+                        elif service_data.protocol == "shadowsocks":
+                            result = client.create_shadowsocks_inbound(
+                                remark=panel_side_remark, domain=panel.domain, port=port,
+                                expiry_days=service_data.duration_days, limit_gb=service_data.data_limit_gb,
+                                config_remark=config_link_remark
+                            )
+                        
+                        panel_config = PanelConfig(managed_service_id=managed_service.id, panel_id=panel.id, panel_inbound_id=result["inbound_id"], config_link=result["link"])
+                        session.add(panel_config)
+                        all_configs_list.append(result["link"])
+                        
+                        last_exception = None
+                        break
                     
-                    shadowsocks_port = vless_port + 1
-                    while shadowsocks_port in used_ports:
-                        shadowsocks_port += 1
+                    except Exception as e:
+                        last_exception = e
+                        print(f"ATTEMPT {attempt + 1} FAILED for panel {panel.url}: {e}")
+                        time.sleep(1)
 
-                    # --- FIX: New remark logic ---
-                    # 1. Remark for identification on the X-UI panel
-                    panel_side_remark_vless = f"{panel.remark_prefix}-{creator.username}-{vless_port}"
-                    panel_side_remark_ss = f"{panel.remark_prefix}-{creator.username}-{shadowsocks_port}"
-
-                    # 2. Final remark for the config link (prefix + user's sticker)
-                    config_link_remark = f"{panel.remark_prefix}{creator.remark}"
-                    
-                    vless_result = client.create_vless_inbound(
-                        remark=panel_side_remark_vless,
-                        domain=panel.domain,
-                        port=vless_port,
-                        expiry_days=service_data.duration_days,
-                        limit_gb=service_data.data_limit_gb,
-                        config_remark=config_link_remark
-                    )
-
-                    shadowsocks_result = client.create_shadowsocks_inbound(
-                        remark=panel_side_remark_ss,
-                        domain=panel.domain,
-                        port=shadowsocks_port,
-                        expiry_days=service_data.duration_days,
-                        limit_gb=service_data.data_limit_gb,
-                        config_remark=config_link_remark
-                    )
-
-                    vless_panel_config = PanelConfig(managed_service_id=managed_service.id, panel_id=panel.id, panel_inbound_id=vless_result["inbound_id"], config_link=vless_result["link"])
-                    ss_panel_config = PanelConfig(managed_service_id=managed_service.id, panel_id=panel.id, panel_inbound_id=shadowsocks_result["inbound_id"], config_link=shadowsocks_result["link"])
-                    session.add_all([vless_panel_config, ss_panel_config])
-
-                    all_configs_list.extend([vless_result["link"], shadowsocks_result["link"]])
-
-                except Exception as e:
+                if last_exception:
                     session.rollback()
-                    raise HTTPException(status_code=500, detail=f"خطا در ایجاد کانفیگ روی پنل {panel.url}: {e}")
+                    raise HTTPException(status_code=500, detail=f"Failed to create config on panel {panel.url} after {MAX_RETRIES} attempts: {last_exception}")
 
             subscription_content = "\n".join(all_configs_list)
             base64_content = base64.b64encode(subscription_content.encode('utf-8')).decode('utf-8')
@@ -144,8 +125,6 @@ async def create_service(
             session.commit()
             
             return {"status": "success", "subscription_link": subscription_url}
-
-# ... (بقیه توابع API بدون تغییر باقی می‌مانند) ...
 
 @api.put("/service/{service_uuid}")
 async def update_service(
