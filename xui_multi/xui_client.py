@@ -7,7 +7,16 @@ import urllib.parse
 from uuid import uuid4
 from datetime import datetime, timedelta
 import os
-from typing import Optional
+from typing import Optional, Dict, List, Any
+
+# Configure logging
+import logging
+logging.basicConfig(
+    filename='xui_multi.log',
+    level=logging.ERROR,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 class XUIClient:
     def __init__(self, base_url, username, password):
@@ -46,13 +55,12 @@ class XUIClient:
                     return inbound
             return None
         except Exception as e:
-            print(f"Error getting inbound {inbound_id} from {self.base_url}: {e}")
+            logger.error(f"Error getting inbound {inbound_id} from {self.base_url}: {e}")
             raise
 
     def _construct_config_link(self, inbound_data, domain, config_remark: Optional[str] = None):
         protocol = inbound_data.get("protocol")
         
-        # اگر ریمارک برای کانفیگ مشخص نشده بود، از ریمارک خود inbound استفاده می‌شود
         if config_remark is None:
             config_remark = inbound_data.get("remark", "")
             
@@ -157,7 +165,7 @@ class XUIClient:
             with httpx.Client(cookies=self.session_cookie) as client:
                 client_response = client.post(update_client_url, data=client_payload)
                 if not (client_response.status_code == 200 and client_response.json().get('success')):
-                     print(f"Warning: updateClient call failed for {client_uuid}: {client_response.text}")
+                     logger.error(f"updateClient call failed for {client_uuid}: {client_response.text}")
 
         update_inbound_url = f"{self.base_url}/panel/inbound/update/{inbound_id}"
 
@@ -213,12 +221,11 @@ class XUIClient:
                 response.raise_for_status()
                 data = response.json()
                 if data and data.get("success"):
-                    # FIX: Handle cases where 'obj' might be null in the response
                     online_clients = data.get("obj")
                     return len(online_clients or [])
                 return 0
         except Exception as e:
-            print(f"Could not get online clients from {self.base_url}: {e}")
+            logger.error(f"Could not get online clients from {self.base_url}: {e}")
             return 0
 
     def get_used_ports(self):
@@ -228,7 +235,9 @@ class XUIClient:
     def _get_id_from_remark(self, remark):
         all_inbounds = self._get_inbounds_list()
         for inbound in all_inbounds:
-            if inbound.get("remark") == remark: return inbound.get("id")
+            if inbound.get("remark") == remark: 
+                return inbound.get("id")
+        logger.error(f"Could not find inbound with remark '{remark}' after creation.")
         raise Exception(f"Could not find inbound with remark '{remark}' after creation.")
 
     def delete_inbound(self, inbound_id: int):
@@ -239,3 +248,37 @@ class XUIClient:
             result = response.json()
             if not result.get("success"): raise Exception(f"Failed to delete inbound {inbound_id}: {result.get('msg')}")
         return True
+
+    def disable_inbound(self, inbound_id: int):
+        """غیرفعال کردن inbound بدون حذف آن"""
+        try:
+            inbound_data = self.get_inbound(inbound_id)
+            if not inbound_data:
+                raise Exception(f"Inbound {inbound_id} not found")
+            
+            update_url = f"{self.base_url}/panel/inbound/update/{inbound_id}"
+            update_payload = {
+                "id": inbound_id,
+                "enable": False,
+                "remark": inbound_data.get("remark", ""),
+                "expiryTime": inbound_data.get("expiryTime", 0),
+                "total": inbound_data.get("total", 0),
+                "settings": inbound_data.get("settings", "{}"),
+                "streamSettings": inbound_data.get("streamSettings", {}),
+                "port": inbound_data.get("port"),
+                "protocol": inbound_data.get("protocol"),
+                "sniffing": inbound_data.get("sniffing", {}),
+                "listen": inbound_data.get("listen", ""),
+            }
+            
+            with httpx.Client(cookies=self.session_cookie) as client:
+                response = client.post(update_url, json=update_payload)
+                response.raise_for_status()
+                result = response.json()
+                if not result.get("success"):
+                    raise Exception(f"Failed to disable inbound {inbound_id}: {result.get('msg')}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error disabling inbound {inbound_id}: {e}")
+            raise

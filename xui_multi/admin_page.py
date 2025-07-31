@@ -93,8 +93,36 @@ class AdminState(AuthState):
         return rx.window_alert("ادمین با موفقیت حذف شد.")
 
     def copy_to_clipboard(self, text: str):
-        """یک تابع کمکی برای کپی کردن متن."""
-        return rx.call_script(f"navigator.clipboard.writeText('{text}')")
+        """کپی کردن متن به کلیپ‌بورد با مدیریت خطا"""
+        return rx.call_script(f"""
+        try {{
+            if (navigator.clipboard && navigator.clipboard.writeText) {{
+                navigator.clipboard.writeText('{text}').then(() => {{
+                    alert('کد API با موفقیت کپی شد!');
+                }}).catch(() => {{
+                    // Fallback for older browsers
+                    const textArea = document.createElement('textarea');
+                    textArea.value = '{text}';
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    alert('کد API با موفقیت کپی شد!');
+                }});
+            }} else {{
+                // Fallback for browsers without clipboard API
+                const textArea = document.createElement('textarea');
+                textArea.value = '{text}';
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                alert('کد API با موفقیت کپی شد!');
+            }}
+        }} catch (error) {{
+            alert('خطا در کپی کردن کد API: ' + error.message);
+        }}
+        """)
 
 # --- UI Components ---
 def add_edit_admin_dialog() -> rx.Component:
@@ -170,10 +198,9 @@ def admin_table() -> rx.Component:
                                 rx.dropdown_menu.item(rx.hstack(rx.icon("pencil", size=16), rx.text("ویرایش")), on_click=lambda: AdminState.show_edit_dialog(user)),
                                 rx.dropdown_menu.separator(),
                                 rx.dropdown_menu.item(rx.hstack(rx.icon("trash-2", size=16), rx.text("حذف")), color="red", on_click=lambda: AdminState.delete_user(user.id)),
-                                rx.dropdown_menu.item(rx.hstack(rx.icon("copy",size=16),rx.text("کپی کد"),color="blue",on_click=lambda: AdminState.copy_to_clipboard(user.api_key),variant="ghost",size="1"),
+                                rx.dropdown_menu.item(rx.hstack(rx.icon("copy", size=16), rx.text("کپی کد API")), on_click=lambda: AdminState.copy_to_clipboard(user.api_key)),
                                 align="center",
                                 spacing="2"
-                            )
                             )
                         ),
                     ),

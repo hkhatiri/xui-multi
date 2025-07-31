@@ -9,7 +9,7 @@ import base64
 import traceback
 
 # --- وارد کردن تمام کامپوننت‌ها و State های لازم ---
-from xui_multi.api_routes import api
+from xui_multi.api_routes import *
 from xui_multi.panel_page import panels_page, backups_page
 from xui_multi.services_page import services_page
 from xui_multi.login_page import login_page
@@ -95,7 +95,26 @@ class IndexState(AuthState):
     update_status: str = ""
 
     def load_stats(self):
+        """بارگذاری آمار با استفاده از کش"""
         self.check_auth()
+        
+        # بررسی کش برای آمار
+        from .cache_manager import cache_manager, get_cache_key, invalidate_traffic_cache
+        
+        traffic_cache_key = get_cache_key('TOTAL_TRAFFIC')
+        online_cache_key = get_cache_key('ONLINE_USERS')
+        
+        cached_traffic = cache_manager.get(traffic_cache_key)
+        cached_online = cache_manager.get(online_cache_key)
+        
+        if cached_traffic and cached_online:
+            self.total_traffic_gb = cached_traffic.get('total', 0.0)
+            self.total_upload_gb = cached_traffic.get('upload', 0.0)
+            self.total_download_gb = cached_traffic.get('download', 0.0)
+            self.online_configs_count = cached_online
+            return
+        
+        # اگر کش موجود نباشد، از دیتابیس بارگذاری کن
         with rx.session() as session:
             creator = session.query(User).filter(User.username == self.token).first()
             if not creator:
@@ -133,6 +152,15 @@ class IndexState(AuthState):
             self.total_upload_gb = total_up_bytes / (1024**3)
             self.total_download_gb = total_down_bytes / (1024**3)
             self.total_traffic_gb = self.total_upload_gb + self.total_download_gb
+            
+            # ذخیره در کش
+            traffic_data = {
+                'total': self.total_traffic_gb,
+                'upload': self.total_upload_gb,
+                'download': self.total_download_gb
+            }
+            cache_manager.set(traffic_cache_key, traffic_data, ttl=30)
+            cache_manager.set(online_cache_key, self.online_configs_count, ttl=30)
 
     def trigger_update_dialog(self):
         self.update_message = ""
@@ -227,6 +255,12 @@ class IndexState(AuthState):
 
                 if services_updated_count > 0:
                     session.commit()
+                    
+                    # حذف کش‌ها
+                    from .cache_manager import invalidate_service_cache, invalidate_panel_cache, invalidate_traffic_cache
+                    invalidate_service_cache()
+                    invalidate_panel_cache()
+                    invalidate_traffic_cache()
 
             self.update_message = f"همگام‌سازی کامل شد. {configs_created_count} کانفیگ جدید برای {services_updated_count} سرویس ساخته شد."
             self.update_status = "success"

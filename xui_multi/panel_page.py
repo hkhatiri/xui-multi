@@ -20,7 +20,20 @@ class PanelsState(AuthState):
     panel_to_edit: Optional[Panel] = None
 
     def load_panels_with_stats(self):
+        """بارگذاری پنل‌ها با آمار با استفاده از کش"""
         self.check_auth()
+        
+        # بررسی کش برای پنل‌ها
+        from .cache_manager import cache_manager, get_cache_key, invalidate_panel_cache
+        
+        cache_key = get_cache_key('PANEL_LIST')
+        cached_panels = cache_manager.get(cache_key)
+        
+        if cached_panels:
+            self.panels = cached_panels
+            return
+        
+        # اگر کش موجود نباشد، از دیتابیس بارگذاری کن
         with rx.session() as session:
             db_panels = session.exec(select(Panel)).all()
             panels_with_stats = []
@@ -36,6 +49,9 @@ class PanelsState(AuthState):
                     panel.online_users = -1
                     panel.total_traffic_gb = -1.0
                 panels_with_stats.append(panel)
+            
+            # ذخیره در کش برای 30 ثانیه
+            cache_manager.set(cache_key, panels_with_stats, ttl=30)
             self.panels = panels_with_stats
 
     def change_dialog_state(self, show: bool):
@@ -71,6 +87,10 @@ class PanelsState(AuthState):
             session.commit()
             session.refresh(panel_to_update)
 
+        # حذف کش پنل‌ها
+        from .cache_manager import invalidate_panel_cache
+        invalidate_panel_cache()
+        
         # --- FIX: بستن مودال قبل از نمایش پیغام ---
         self.show_dialog = False
         self.load_panels_with_stats()
@@ -85,7 +105,19 @@ class PanelsState(AuthState):
                 for backup in backups:
                     session.delete(backup)
                 session.delete(panel_to_delete)
-                session.commit()
+            session.commit()
+            
+            # حذف کش پنل‌ها
+            from .cache_manager import invalidate_panel_cache
+            invalidate_panel_cache()
+            
+            # اجرای وظیفه پاکسازی کانفیگ‌های مربوط به پنل حذف شده
+            try:
+                from .tasks import cleanup_deleted_panels_task
+                cleanup_deleted_panels_task.delay()
+            except Exception as e:
+                print(f"Error triggering cleanup task: {e}")
+            
             self.load_panels_with_stats()
         return rx.window_alert("پنل با موفقیت حذف شد.")
 
@@ -98,7 +130,7 @@ class PanelBackupsState(AuthState):
     @rx.var
     def current_panel_id(self) -> str:
         try:
-            path = self.router.page.path
+            path = self.router.url
             parts = path.strip("/").split("/")
             if len(parts) == 3 and parts[0] == "panels" and parts[2] == "backups":
                 return parts[1]

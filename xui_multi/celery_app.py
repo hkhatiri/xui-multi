@@ -18,4 +18,8 @@ celery_app.conf.beat_schedule = {
         'task': 'xui_multi.tasks.sync_usage_task',
         'schedule': crontab(minute='*/2'),
     },
+    'cleanup-every-hour': {
+        'task': 'xui_multi.tasks.cleanup_deleted_panels_task',
+        'schedule': crontab(minute=0, hour='*/1'),
+    },
 }

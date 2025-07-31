@@ -20,6 +20,7 @@ class ManagedService(rx.Model, table=True):
     data_limit_gb: float
     data_used_gb: float = 0.0
     status: str = "active"
+    protocol: str = "vless"  # Added protocol field
     subscription_link: str = ""
     created_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
     creator: Optional[User] = Relationship()
