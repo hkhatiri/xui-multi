@@ -7,3 +7,26 @@ Traceback (most recent call last):
 OSError: [Errno 5] Input/output error
 2025-08-01 11:26:53,704 - xui_multi.api_routes - ERROR - Attempt 1 failed for panel http://62.60.177.214:3377: local variable 'result' referenced before assignment
 2025-08-01 11:26:55,223 - xui_multi.api_routes - ERROR - Attempt 2 failed for panel http://62.60.177.214:3377: local variable 'result' referenced before assignment
+2025-08-01 15:26:05,679 - xui_multi.services_page - ERROR - Failed to get services from API: 401
+2025-08-01 15:26:07,623 - xui_multi.services_page - ERROR - Failed to get services from API: 401
+2025-08-01 15:26:20,498 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:26:21,937 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:26:37,407 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:26:37,876 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:26:46,807 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:26:48,218 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:26:55,449 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:26:56,837 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:27:06,121 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:27:07,481 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:27:14,621 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:27:16,010 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:27:45,428 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:27:46,863 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:27:53,646 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:27:55,064 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:28:02,863 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:28:04,289 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:28:41,491 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:29:12,862 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'
+2025-08-01 15:29:14,227 - xui_multi.services_page - ERROR - Error getting services from API: module 'datetime' has no attribute 'now'

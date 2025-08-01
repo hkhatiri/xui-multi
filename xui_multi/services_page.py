@@ -68,8 +68,6 @@ class DashboardState(AuthState):
     action_status: str = ""
 
     api_url: str = "http://localhost:8000"
-    api_key: str = "SECRET_KEY_12345"
-    user_api_key: str = ""
 
     @rx.var
     def total_pages(self) -> int:
@@ -138,8 +136,15 @@ class DashboardState(AuthState):
             if cached_data:
                 self.all_services = cached_data
             else:
+                # Clear the list before adding new data
+                self.all_services = []
                 with rx.session() as session:
-                    services = session.query(ManagedService).all()
+                    if self.username == "hkhatiri":
+                        # ادمین اصلی همه سرویس‌ها را می‌بیند
+                        services = session.query(ManagedService).all()
+                    else:
+                        # سایر کاربران فقط سرویس‌های خودشان را می‌بینند
+                        services = session.query(ManagedService).filter(ManagedService.created_by_id == self.user_id).all()
                     
                     for service in services:
                         configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()

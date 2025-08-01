@@ -51,6 +51,8 @@ class AuthState(rx.State):
     username: str = ""
     password: str = ""
     error_message: str = ""
+    user_api_key: str = ""  # API key will be loaded from database
+    user_id: int = 0  # User ID for filtering services
 
     def check_auth(self):
         """بررسی می‌کند که آیا توکن کاربر معتبر است یا خیر."""
@@ -64,6 +66,9 @@ class AuthState(rx.State):
                 self.is_authenticated = True
                 self.username = user.username
                 self.is_admin = self.username == "hkhatiri"
+                # Load API key from database
+                self.user_api_key = user.api_key
+                self.user_id = user.id
             else:
                 self.logout()
 
@@ -79,6 +84,9 @@ class AuthState(rx.State):
                 self.token = user.username
                 self.is_authenticated = True
                 self.error_message = ""
+                # Load API key from database
+                self.user_api_key = user.api_key
+                self.user_id = user.id
                 # Clear the password field after login attempt
                 self.password = ""
                 return rx.redirect("/")
