@@ -4,14 +4,13 @@ import base64
 import logging
 from datetime import datetime
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 from sqlmodel import select
 import reflex as rx
 
 from .celery_app import *
 from .models import ManagedService, Panel, PanelConfig, User
 from .xui_client import XUIClient
-from .subscription_manager import SubscriptionManager
 
 # Configure logging
 logging.basicConfig(

@@ -155,7 +155,7 @@ class DashboardState(AuthState):
                             "config_count": len(configs),
                             "data_usage": f"{service.data_used_gb:.2f} / {service.data_limit_gb:.1f} GB",
                             "remaining_time": format_remaining_time(service.end_date, service.status),
-                            "subscription_link": f"http://multi.antihknet.com:8000/static/subs/{service.uuid}.txt",
+                            "subscription_link": f"https://multi.antihknet.com/static/subs/{service.uuid}.txt",
                             "created_by": service.creator.username if service.creator else "نامشخص",
                             "created_by_id": service.creator.id if service.creator else None
                         }

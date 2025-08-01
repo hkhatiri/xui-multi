@@ -1,0 +1,9 @@
+2025-08-01 06:22:18,399 - apscheduler.executors.default - ERROR - Job "run_all_backups (trigger: interval[12:00:00], next run at: 2025-08-01 18:22:18 UTC)" raised an exception
+Traceback (most recent call last):
+  File "/home/hk/xui-multi/venv/lib/python3.10/site-packages/apscheduler/executors/base.py", line 131, in run_job
+    retval = job.func(*job.args, **job.kwargs)
+  File "/home/hk/xui-multi/xui_multi/xui_multi.py", line 31, in run_all_backups
+    print(f"[{datetime.now()}] شروع فرآیند پشتیبان‌گیری خودکار...")
+OSError: [Errno 5] Input/output error
+2025-08-01 11:26:53,704 - xui_multi.api_routes - ERROR - Attempt 1 failed for panel http://62.60.177.214:3377: local variable 'result' referenced before assignment
+2025-08-01 11:26:55,223 - xui_multi.api_routes - ERROR - Attempt 2 failed for panel http://62.60.177.214:3377: local variable 'result' referenced before assignment

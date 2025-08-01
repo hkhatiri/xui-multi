@@ -15,6 +15,7 @@ from sqlmodel import select
 
 from .models import ManagedService, Panel, PanelConfig, User
 from .xui_client import XUIClient
+from .tasks import build_configs_task
 
 api = FastAPI()
 service_creation_lock = threading.Lock()
@@ -49,119 +50,7 @@ async def get_current_user(x_api_authorization: Annotated[str, Header()]):
             raise HTTPException(status_code=401, detail="Invalid User API Key")
         return user
 
-async def build_configs_background(service_uuid: str, creator_id: int, protocol: str, duration_days: float, data_limit_gb: float):
-    """ساخت کانفیگ‌ها در پس‌زمینه و ذخیره در فایل"""
-    try:
-        with rx.session() as session:
-            service = session.exec(select(ManagedService).where(ManagedService.uuid == service_uuid)).first()
-            if not service:
-                logger.error(f"Service {service_uuid} not found for background config building")
-                return
-            
-            creator = session.exec(select(User).where(User.id == creator_id)).first()
-            if not creator:
-                logger.error(f"User {creator_id} not found for background config building")
-                return
-            
-            all_panels = session.query(Panel).all()
-            if not all_panels:
-                logger.error(f"No panels found for background config building")
-                return
 
-            all_configs_list = []
-            base_port = 20000
-            
-            for panel in all_panels:
-                last_exception = None
-                for attempt in range(MAX_RETRIES):
-                    try:
-                        client = XUIClient(panel.url, panel.username, panel.password)
-                        used_ports = set(client.get_used_ports())
-                        
-                        port = base_port
-                        while port in used_ports:
-                            port += 1
-                        
-                        panel_side_remark = f"{panel.remark_prefix}-{creator.username}-{port}"
-
-                        if protocol == "vless":
-                            result = client._create_inbound(
-                                {
-                                    "up": "0",
-                                    "down": "0",
-                                    "total": "0",
-                                    "remark": panel_side_remark,
-                                    "enable": "true",
-                                    "expiryTime": "0",
-                                    "listen": "",
-                                    "port": str(port),
-                                    "protocol": "vless",
-                                    "settings": json.dumps({
-                                        "clients": [{
-                                            "id": service.uuid,
-                                            "flow": "",
-                                            "email": f"{creator.username}@{service.name}",
-                                            "limitIp": 0,
-                                            "totalGB": 0,
-                                            "expiryTime": 0,
-                                            "enable": True,
-                                            "tgId": "",
-                                            "reset": 0,
-                                            "subId": 1
-                                        }]
-                                    }),
-                                    "streamSettings": json.dumps({
-                                        "network": "tcp",
-                                        "security": "none",
-                                        "tcpSettings": {
-                                            "header": {
-                                                "type": "none"
-                                            }
-                                        }
-                                    }),
-                                    "sniffing": json.dumps({
-                                        "enabled": True,
-                                        "destOverride": ["http", "tls"]
-                                    })
-                                },
-                                panel.domain,
-                                f"{creator.username}@{service.name}"
-                            )
-                        
-                        panel_config = PanelConfig(managed_service_id=service.id, panel_id=panel.id, panel_inbound_id=result["inbound_id"], config_link=result["link"])
-                        session.add(panel_config)
-                        all_configs_list.append(result["link"])
-                        break
-                    
-                    except Exception as e:
-                        last_exception = e
-                        logger.error(f"Attempt {attempt + 1} failed for panel {panel.url}: {e}")
-                        time.sleep(1)
-
-                if last_exception:
-                    logger.error(f"Failed to create config on panel {panel.url} after {MAX_RETRIES} attempts: {last_exception}")
-                    continue
-
-            if all_configs_list:
-                subscription_content = "\n".join(all_configs_list)
-                base64_content = base64.b64encode(subscription_content.encode('utf-8')).decode('utf-8')
-                
-                subs_dir = "static/subs"
-                os.makedirs(subs_dir, exist_ok=True)
-                file_path = os.path.join(subs_dir, f"{service.uuid}.txt")
-                
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(base64_content)
-                
-                service.subscription_link = f"http://multi.antihknet.com:8000/static/subs/{service.uuid}.txt"
-                session.commit()
-            else:
-                logger.error(f"No configs were created for service {service_uuid}")
-                
-    except Exception as e:
-        logger.error(f"Error in background config building for service {service_uuid}: {e}")
-        import traceback
-        traceback.print_exc()
 
 @api.post("/service")
 async def create_service(
@@ -195,8 +84,7 @@ async def create_service(
             with open(file_path, "w") as f:
                 f.write(base64_content)
             
-            base_url = str(request.base_url).rstrip('/')
-            subscription_url = f"{base_url}/static/subs/{service_uuid}.txt"
+            subscription_url = f"https://multi.antihknet.com/static/subs/{service_uuid}.txt"
             managed_service.subscription_link = subscription_url
             session.commit()
             
