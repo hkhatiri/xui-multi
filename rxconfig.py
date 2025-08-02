@@ -2,7 +2,7 @@ import reflex as rx
 
 config = rx.Config(
     app_name="xui_multi",
-    db_url="sqlite:///reflex.db", # برای شروع از SQLite استفاده می‌کنیم
+    db_url="postgresql://hkhatiri:Kiri.BashaKoni1471@localhost:5432/xui_multi", # PostgreSQL connection
     disable_plugins=['reflex.plugins.sitemap.SitemapPlugin'],
     # Disable HTTPS redirect for development
     frontend_port=3000,

@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlmodel import select
 import reflex as rx
 
-from .celery_app import *
+from .redis_queue import redis_queue
 from .models import ManagedService, Panel, PanelConfig, User
 from .xui_client import XUIClient
 
@@ -20,7 +20,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-@celery_app.task
 def sync_usage_task():
     """این وظیفه در پس‌زمینه مصرف را سینک می‌کند و محدودیت‌ها را اعمال می‌کند."""
     config = rx.config.get_config()
@@ -71,10 +70,9 @@ def sync_usage_task():
             session.rollback()
             raise
 
-@celery_app.task
 def build_configs_task(service_uuid: str, creator_id: int, protocol: str, duration_days: float, data_limit_gb: float):
-    """ساخت کانفیگ‌ها در پس‌زمینه با استفاده از Celery"""
-    logger.info(f"[{datetime.now()}] Starting Celery config building for service {service_uuid}")
+    """ساخت کانفیگ‌ها در پس‌زمینه با استفاده از Redis"""
+    logger.info(f"[{datetime.now()}] Starting Redis config building for service {service_uuid}")
     try:
         config = rx.config.get_config()
         engine = create_engine(config.db_url)
@@ -173,11 +171,170 @@ def build_configs_task(service_uuid: str, creator_id: int, protocol: str, durati
                 logger.error(f"[{datetime.now()}] ERROR: No configs were created for service {service_uuid}")
                 
     except Exception as e:
-        logger.error(f"[{datetime.now()}] ERROR in Celery background config building for service {service_uuid}: {e}")
+        logger.error(f"[{datetime.now()}] ERROR in Redis background config building for service {service_uuid}: {e}")
         import traceback
         traceback.print_exc()
 
-@celery_app.task
+# Helper functions for Redis queue
+def enqueue_sync_usage():
+    """Add sync usage task to Redis queue"""
+    try:
+        task_id = redis_queue.enqueue_task('sync_usage', {}, priority=1)
+        logger.info(f"Sync usage task enqueued: {task_id}")
+        return task_id
+    except Exception as e:
+        logger.error(f"Error enqueueing sync usage task: {e}")
+        raise
+
+def enqueue_build_configs(service_uuid: str, creator_id: int, protocol: str, duration_days: float, data_limit_gb: float):
+    """Add build configs task to Redis queue"""
+    try:
+        task_data = {
+            'service_uuid': service_uuid,
+            'creator_id': creator_id,
+            'protocol': protocol,
+            'duration_days': duration_days,
+            'data_limit_gb': data_limit_gb
+        }
+        task_id = redis_queue.enqueue_task('build_configs', task_data, priority=10)
+        logger.info(f"Build configs task enqueued: {task_id}")
+        return task_id
+    except Exception as e:
+        logger.error(f"Error enqueueing build configs task: {e}")
+        raise
+
+def enqueue_cleanup_panels():
+    """Add cleanup panels task to Redis queue"""
+    try:
+        task_id = redis_queue.enqueue_task('cleanup_panels', {}, priority=5)
+        logger.info(f"Cleanup panels task enqueued: {task_id}")
+        return task_id
+    except Exception as e:
+        logger.error(f"Error enqueueing cleanup panels task: {e}")
+        raise
+
+def enqueue_update_service(service_uuid: str, data_limit_gb: float, duration_days: int):
+    """Add update service task to Redis queue"""
+    try:
+        task_data = {
+            'service_uuid': service_uuid,
+            'data_limit_gb': data_limit_gb,
+            'duration_days': duration_days
+        }
+        task_id = redis_queue.enqueue_task('update_service', task_data, priority=8)
+        logger.info(f"Update service task enqueued: {task_id}")
+        return task_id
+    except Exception as e:
+        logger.error(f"Error enqueueing update service task: {e}")
+        raise
+
+def enqueue_delete_service(service_uuid: str):
+    """Add delete service task to Redis queue"""
+    try:
+        task_data = {
+            'service_uuid': service_uuid
+        }
+        task_id = redis_queue.enqueue_task('delete_service', task_data, priority=9)
+        logger.info(f"Delete service task enqueued: {task_id}")
+        return task_id
+    except Exception as e:
+        logger.error(f"Error enqueueing delete service task: {e}")
+        raise
+
+def update_service_task(service_uuid: str, data_limit_gb: float, duration_days: int):
+    """Update service configurations in background using Redis"""
+    logger.info(f"[{datetime.now()}] --- Running update service job for {service_uuid} ---")
+    
+    config = rx.config.get_config()
+    engine = create_engine(config.db_url)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    
+    with SessionLocal() as session:
+        try:
+            service = session.query(ManagedService).filter(ManagedService.uuid == service_uuid).first()
+            if not service:
+                logger.error(f"Service {service_uuid} not found")
+                return
+            
+            new_total_gb_bytes = int(data_limit_gb * 1024 * 1024 * 1024)
+            new_end_date = datetime.now() + timedelta(days=duration_days)
+            new_expiry_time_ms = int(new_end_date.timestamp() * 1000)
+            
+            updated_configs = 0
+            for p_config in service.configs:
+                try:
+                    panel = p_config.panel
+                    client = XUIClient(panel.url, panel.username, panel.password)
+                    client.update_inbound(
+                        inbound_id=p_config.panel_inbound_id,
+                        new_total_gb=new_total_gb_bytes,
+                        new_expiry_time_ms=new_expiry_time_ms
+                    )
+                    updated_configs += 1
+                    logger.info(f"Updated config {p_config.id} on panel {panel.url}")
+                except Exception as e:
+                    logger.error(f"Error updating config {p_config.id} on panel {p_config.panel.url}: {e}")
+            
+            service.data_limit_gb = data_limit_gb
+            service.end_date = new_end_date
+            session.commit()
+            
+            logger.info(f"[{datetime.now()}] --- Update service job completed for {service_uuid}, updated {updated_configs} configs ---")
+            
+        except Exception as e:
+            logger.error(f"[{datetime.now()}] --- Update service job failed for {service_uuid}: {e} ---")
+            session.rollback()
+            raise
+
+def delete_service_task(service_uuid: str):
+    """Delete service and all its configurations in background using Redis"""
+    logger.info(f"[{datetime.now()}] --- Running delete service job for {service_uuid} ---")
+    
+    config = rx.config.get_config()
+    engine = create_engine(config.db_url)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    
+    with SessionLocal() as session:
+        try:
+            service = session.query(ManagedService).filter(ManagedService.uuid == service_uuid).first()
+            if not service:
+                logger.error(f"Service {service_uuid} not found")
+                return
+            
+            deleted_configs = 0
+            for p_config in service.configs:
+                try:
+                    panel = p_config.panel
+                    if panel:
+                        client = XUIClient(panel.url, panel.username, panel.password)
+                        client.delete_inbound(p_config.panel_inbound_id)
+                        logger.info(f"Deleted config {p_config.id} from panel {panel.url}")
+                    else:
+                        logger.warning(f"Panel not found for config {p_config.id}")
+                    deleted_configs += 1
+                except Exception as e:
+                    panel_url = panel.url if panel else "unknown"
+                    logger.error(f"Error deleting config {p_config.panel_inbound_id} from panel {panel_url}: {e}")
+                session.delete(p_config)
+            
+            # Delete subscription file
+            if service.subscription_link:
+                file_name = service.subscription_link.split("/")[-1]
+                file_path = os.path.join("static/subs", file_name)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logger.info(f"Deleted subscription file: {file_path}")
+            
+            session.delete(service)
+            session.commit()
+            
+            logger.info(f"[{datetime.now()}] --- Delete service job completed for {service_uuid}, deleted {deleted_configs} configs ---")
+            
+        except Exception as e:
+            logger.error(f"[{datetime.now()}] --- Delete service job failed for {service_uuid}: {e} ---")
+            session.rollback()
+            raise
+
 def cleanup_deleted_panels_task():
     """حذف کانفیگ‌های مربوط به پنل‌های حذف شده از فایل‌های subscription"""
     logger.info(f"[{datetime.now()}] --- Running cleanup job ---")

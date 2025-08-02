@@ -14,10 +14,12 @@ from xui_multi.panel_page import panels_page, backups_page
 from xui_multi.services_page import services_page
 from xui_multi.login_page import login_page
 from xui_multi.admin_page import admin_page
+
 from xui_multi.auth_state import AuthState, create_initial_admin_user
 from .template import template
 from .models import Panel, ManagedService, PanelConfig, Backup, User
 from .xui_client import XUIClient
+from .redis_worker import start_redis_workers
 
 # --- تنظیمات پایه ---
 base_style = {"direction": "rtl", "font_family": "IRANSans"}
@@ -347,5 +349,9 @@ app.add_page(template(backups_page), route="/panels/[panel_id]/backups", title="
 app.add_page(template(services_page), route="/dashboard", title="داشبورد سرویس‌ها", on_load=AuthState.check_auth)
 app.add_page(template(admin_page), route="/admin", title="مدیریت ادمین‌ها", on_load=AuthState.check_auth)
 
+
 # --- ایجاد کاربر ادمین اولیه در زمان راه‌اندازی ---
 create_initial_admin_user()
+
+# --- راه‌اندازی Redis Workers ---
+start_redis_workers()

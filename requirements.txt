@@ -1,9 +1,7 @@
 reflex>=0.8.0
-APScheduler>=3.10.0
 requests>=2.30.0
-celery
-redis
-eventlet
+redis>=4.5.0
 httpx
 bcrypt
 dotenv
+psycopg2-binary>=2.9.0

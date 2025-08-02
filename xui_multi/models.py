@@ -2,7 +2,6 @@
 
 from sqlmodel import Field, Relationship, SQLModel
 from typing import List, Optional
-import reflex as rx
 import datetime
 
 class User(SQLModel, table=True):
@@ -12,7 +11,8 @@ class User(SQLModel, table=True):
     remark: Optional[str] = Field(default=None)
     api_key: Optional[str] = Field(default=None, unique=True, index=True) # <<< این خط اضافه شد
 
-class ManagedService(rx.Model, table=True):
+class ManagedService(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     uuid: str
     start_date: datetime.datetime
@@ -26,7 +26,7 @@ class ManagedService(rx.Model, table=True):
     creator: Optional[User] = Relationship()
     configs: List["PanelConfig"] = Relationship(back_populates="managed_service")
 
-class Panel(rx.Model, table=True):
+class Panel(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     url: str
     username: str
@@ -40,7 +40,8 @@ class Panel(rx.Model, table=True):
     online_users: int = 0
     total_traffic_gb: float = 0.0
 
-class PanelConfig(rx.Model, table=True):
+class PanelConfig(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
     managed_service_id: Optional[int] = Field(default=None, foreign_key="managedservice.id")
     panel_id: Optional[int] = Field(default=None, foreign_key="panel.id")
     panel_inbound_id: int
@@ -48,7 +49,7 @@ class PanelConfig(rx.Model, table=True):
     managed_service: Optional[ManagedService] = Relationship(back_populates="configs")
     panel: Optional[Panel] = Relationship(back_populates="configs")
 
-class Backup(rx.Model, table=True):
+class Backup(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     panel_id: int = Field(foreign_key="panel.id")
     file_name: str

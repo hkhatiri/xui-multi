@@ -36,7 +36,7 @@ def create_initial_admin_user():
         except OperationalError as e:
             # اگر خطا مربوط به عدم وجود جدول بود، آن را نادیده بگیر
             # این حالت دقیقا در زمان اجرای `reflex db init` رخ می‌دهد
-            if "no such table" in str(e):
+            if "no such table" in str(e) or "relation" in str(e) and "does not exist" in str(e):
                 print("Info: Skipping initial user creation because tables do not exist yet (during `db init`).")
                 pass
             else:

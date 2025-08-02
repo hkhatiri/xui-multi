@@ -88,7 +88,8 @@ async def create_service(
             managed_service.subscription_link = subscription_url
             session.commit()
             
-            build_configs_task.delay(service_uuid, creator.id, service_data.protocol, service_data.duration_days, service_data.data_limit_gb)
+            from .tasks import enqueue_build_configs
+            enqueue_build_configs(service_uuid, creator.id, service_data.protocol, service_data.duration_days, service_data.data_limit_gb)
             
             try:
                 from .cache_manager import invalidate_service_cache, invalidate_traffic_cache
@@ -114,34 +115,15 @@ async def update_service(
         if service.created_by_id != current_user.id and current_user.username != "hkhatiri":
             raise HTTPException(status_code=403, detail="شما اجازه دسترسی به این سرویس را ندارید.")
 
-        new_total_gb_bytes = int(update_data.data_limit_gb * 1024 * 1024 * 1024)
-        new_end_date = datetime.now() + timedelta(days=update_data.duration_days)
-        new_expiry_time_ms = int(new_end_date.timestamp() * 1000)
+        # Add task to Redis queue
+        from .tasks import enqueue_update_service
+        task_id = enqueue_update_service(service_uuid, update_data.data_limit_gb, update_data.duration_days)
 
-        for p_config in service.configs:
-            try:
-                panel = p_config.panel
-                client = XUIClient(panel.url, panel.username, panel.password)
-                client.update_inbound(
-                    inbound_id=p_config.panel_inbound_id,
-                    new_total_gb=new_total_gb_bytes,
-                    new_expiry_time_ms=new_expiry_time_ms
-                )
-            except Exception as e:
-                logger.error(f"خطا در آپدیت کانفیگ روی پنل {p_config.panel.url}: {e}")
-
-        service.data_limit_gb = update_data.data_limit_gb
-        service.end_date = new_end_date
-        session.commit()
-
-        try:
-            from .cache_manager import invalidate_service_cache, invalidate_traffic_cache
-            invalidate_service_cache()
-            invalidate_traffic_cache()
-        except ImportError:
-            pass
-
-        return {"status": "success", "message": "سرویس با موفقیت آپدیت شد."}
+        return {
+            "status": "success", 
+            "message": "درخواست آپدیت سرویس در صف قرار گرفت و در حال پردازش است.",
+            "task_id": task_id
+        }
 
 @api.delete("/service/{service_uuid}")
 async def delete_service(
@@ -157,36 +139,15 @@ async def delete_service(
         if service.created_by_id != current_user.id and current_user.username != "hkhatiri":
             raise HTTPException(status_code=403, detail="شما اجازه دسترسی به این سرویس را ندارید.")
         
-        for p_config in service.configs:
-            try:
-                panel = p_config.panel
-                if panel:
-                    client = XUIClient(panel.url, panel.username, panel.password)
-                    client.delete_inbound(p_config.panel_inbound_id)
-                else:
-                    logger.warning(f"Panel not found for config {p_config.id}")
-            except Exception as e:
-                panel_url = panel.url if panel else "unknown"
-                logger.error(f"خطای غیربحرانی: حذف کانفیگ {p_config.panel_inbound_id} از پنل {panel_url} با مشکل مواجه شد: {e}")
-            session.delete(p_config)
+        # Add task to Redis queue
+        from .tasks import enqueue_delete_service
+        task_id = enqueue_delete_service(service_uuid)
         
-        if service.subscription_link:
-            file_name = service.subscription_link.split("/")[-1]
-            file_path = os.path.join("static/subs", file_name)
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        
-        session.delete(service)
-        session.commit()
-        
-        try:
-            from .cache_manager import invalidate_service_cache, invalidate_traffic_cache
-            invalidate_service_cache()
-            invalidate_traffic_cache()
-        except ImportError:
-            pass
-        
-        return {"status": "success", "message": f"سرویس {service_uuid} با موفقیت حذف شد."}
+        return {
+            "status": "success", 
+            "message": "درخواست حذف سرویس در صف قرار گرفت و در حال پردازش است.",
+            "task_id": task_id
+        }
 
 @api.delete("/services/inactive")
 async def delete_inactive_services(
@@ -255,3 +216,46 @@ async def get_service_stats(service_uuid: str, current_user: User = Depends(get_
             "remaining_days": remaining_days,
             "status": service.status
         }
+
+@api.get("/redis/queue/stats")
+async def get_redis_queue_stats(current_user: User = Depends(get_current_user)):
+    """Get Redis queue statistics"""
+    try:
+        from .redis_worker import get_queue_statistics
+        stats = get_queue_statistics()
+        return {
+            "queue_stats": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting queue stats: {e}")
+
+@api.get("/redis/task/{task_id}/status")
+async def get_task_status(task_id: str, current_user: User = Depends(get_current_user)):
+    """Get status of a specific task"""
+    try:
+        from .redis_worker import worker_manager
+        status = worker_manager.get_task_status(task_id)
+        if status:
+            return {
+                "task_id": task_id,
+                "status": status,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Task not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting task status: {e}")
+
+@api.get("/redis/workers/status")
+async def get_workers_status(current_user: User = Depends(get_current_user)):
+    """Get Redis workers status"""
+    try:
+        from .redis_worker import worker_manager
+        return {
+            "workers_running": worker_manager.running,
+            "active_workers": len(worker_manager.workers),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting workers status: {e}")

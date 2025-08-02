@@ -39,6 +39,7 @@ def format_remaining_time(end_date: datetime.datetime, status: str) -> str:
 class DashboardState(AuthState):
     all_services: List[Dict[str, Any]] = []
     services_display: List[Dict[str, Any]] = []
+    filtered_services: List[Dict[str, Any]] = []  # Store full filtered list
     search_query: str = ""
     current_page: int = 1
     items_per_page: int = 20
@@ -72,7 +73,9 @@ class DashboardState(AuthState):
     @rx.var
     def total_pages(self) -> int:
         """محاسبه تعداد کل صفحات"""
-        return max(1, (len(self.services_display) + self.items_per_page - 1) // self.items_per_page)
+        # Calculate based on the filtered services list
+        total_items = len(self.filtered_services)
+        return max(1, (total_items + self.items_per_page - 1) // self.items_per_page)
 
     @rx.var
     def service_config_counts(self) -> List[str]:
@@ -178,13 +181,17 @@ class DashboardState(AuthState):
     def _filter_services(self):
         """فیلتر کردن سرویس‌ها بر اساس جستجو"""
         if not self.search_query:
-            self.services_display = self.all_services.copy()
+            # Sort by creation date (newest first) - assuming services have created_at field
+            # For now, we'll sort by ID in descending order (newest first)
+            self.filtered_services = sorted(self.all_services.copy(), key=lambda x: x["id"], reverse=True)
         else:
             query = self.search_query.lower()
-            self.services_display = [
+            filtered_services = [
                 service for service in self.all_services
                 if query in service["name"].lower() or query in service["status_fa"].lower()
             ]
+            # Sort filtered results by ID in descending order
+            self.filtered_services = sorted(filtered_services, key=lambda x: x["id"], reverse=True)
         
         self.current_page = 1
         self._paginate_services()
@@ -193,7 +200,9 @@ class DashboardState(AuthState):
         """صفحه‌بندی سرویس‌ها"""
         start_idx = (self.current_page - 1) * self.items_per_page
         end_idx = start_idx + self.items_per_page
-        self.services_display = self.services_display[start_idx:end_idx]
+        
+        # Show only the current page items
+        self.services_display = self.filtered_services[start_idx:end_idx]
 
     def next_page(self):
         """صفحه بعدی"""
@@ -538,64 +547,74 @@ def services_page() -> rx.Component:
             )
         ),
 
-        rx.table.root(
-            rx.table.header(
-                rx.table.row(
-                    rx.table.column_header_cell("عملیات", text_align="center", width="5%"),
-                    rx.table.column_header_cell("زمان باقی مانده", text_align="center"),
-                    rx.table.column_header_cell("حجم مصرفی", text_align="center"),
-                    rx.table.column_header_cell("تعداد کانفیگ", text_align="center"),
-                    rx.table.column_header_cell("پروتکل", text_align="center"),
-                    rx.table.column_header_cell("وضعیت", text_align="center"),
-                    rx.table.column_header_cell("نام سرویس", text_align="right"),
-                )
-            ),
-            rx.table.body(
-                rx.foreach(
-                    DashboardState.services_display,
-                    lambda service: rx.table.row(
-                        rx.table.cell(
-                            rx.dropdown_menu.root(
-                                rx.dropdown_menu.trigger(rx.icon_button(rx.icon("ellipsis-vertical"), variant="soft")),
-                                rx.dropdown_menu.content(
-                                    rx.dropdown_menu.item(rx.hstack(rx.icon("pencil", size=16), rx.text("ویرایش")), on_click=lambda: DashboardState.open_edit_dialog(service)),
-                                    rx.dropdown_menu.separator(),
-                                    rx.dropdown_menu.item(rx.hstack(rx.icon("trash-2", size=16), rx.text("حذف")), color="red", on_click=lambda: DashboardState.open_delete_dialog(service)),
-                                    rx.dropdown_menu.item(rx.hstack(rx.icon("copy", size=16), rx.text("کپی لینک")), on_click=lambda: DashboardState.copy_to_clipboard(service["subscription_link"])),
-                                    align="center",
-                                    spacing="2"
-                                )
+        rx.box(
+            rx.table.root(
+                rx.table.header(
+                    rx.table.row(
+                        rx.table.column_header_cell("عملیات", text_align="center", width="8%"),
+                        rx.table.column_header_cell("زمان باقی مانده", text_align="center", width="15%"),
+                        rx.table.column_header_cell("حجم مصرفی", text_align="center", width="15%"),
+                        rx.table.column_header_cell("تعداد کانفیگ", text_align="center", width="12%"),
+                        rx.table.column_header_cell("پروتکل", text_align="center", width="10%"),
+                        rx.table.column_header_cell("وضعیت", text_align="center", width="12%"),
+                        rx.table.column_header_cell("نام سرویس", text_align="center", width="28%"),
+                    )
+                ),
+                rx.table.body(
+                    rx.foreach(
+                        DashboardState.services_display,
+                        lambda service: rx.table.row(
+                            rx.table.cell(
+                                rx.dropdown_menu.root(
+                                    rx.dropdown_menu.trigger(rx.icon_button(rx.icon("ellipsis-vertical"), variant="soft")),
+                                    rx.dropdown_menu.content(
+                                        rx.dropdown_menu.item(rx.hstack(rx.icon("pencil", size=16), rx.text("ویرایش")), on_click=lambda: DashboardState.open_edit_dialog(service)),
+                                        rx.dropdown_menu.separator(),
+                                        rx.dropdown_menu.item(rx.hstack(rx.icon("trash-2", size=16), rx.text("حذف")), color="red", on_click=lambda: DashboardState.open_delete_dialog(service)),
+                                        rx.dropdown_menu.item(rx.hstack(rx.icon("copy", size=16), rx.text("کپی لینک")), on_click=lambda: DashboardState.copy_to_clipboard(service["subscription_link"])),
+                                        align="center",
+                                        spacing="2"
+                                    )
+                                ),
+                                text_align="center"
                             ),
+                            rx.table.cell(service["remaining_time"], text_align="center"),
+                            rx.table.cell(service["data_usage"], text_align="center"),
+                            rx.table.cell(
+                                rx.text(
+                                    f"{service['config_count']}",
+                                    text_align="center",
+                                    font_weight="bold"
+                                ),
+                                text_align="center"
+                            ),
+                            rx.table.cell(
+                                rx.badge(service["protocol"], color_scheme="purple", size="1"),
+                                text_align="center"
+                            ),
+                            rx.table.cell(
+                                rx.badge(
+                                    service["status_fa"], 
+                                    color_scheme=rx.cond(
+                                        service["status"] == "active",
+                                        "green",
+                                        "red"
+                                    ), 
+                                    size="1"
+                                ),
+                                text_align="center"
+                            ),
+                            rx.table.cell(service["name"], text_align="center", font_weight="medium"),
                         ),
-                        rx.table.cell(service["remaining_time"], text_align="center"),
-                        rx.table.cell(service["data_usage"], text_align="center"),
-                        rx.table.cell(
-                            rx.text(
-                                f"{service['config_count']}",
-                                text_align="center",
-                                font_weight="bold"
-                            )
-                        ),
-                        rx.table.cell(
-                            rx.badge(service["protocol"], color_scheme="purple", size="1")
-                        ),
-                        rx.table.cell(
-                            rx.badge(
-                                service["status_fa"], 
-                                color_scheme=rx.cond(
-                                    service["status"] == "active",
-                                    "green",
-                                    "red"
-                                ), 
-                                size="1"
-                            )
-                        ),
-                        rx.table.cell(service["name"], text_align="right", font_weight="medium"),
-                    ),
-                )
+                    )
+                ),
+                variant="surface",
+                style={"width": "100%", "border": "1px solid #e2e8f0", "border_radius": "8px"}
             ),
-            variant="surface",
-            style={"width": "100%", "border": "1px solid #e2e8f0", "border_radius": "8px"}
+            width="100%",
+            max_width="1400px",
+            margin="0 auto",
+            padding="1em"
         ),
 
         rx.hstack(
