@@ -5,7 +5,7 @@ from datetime import datetime
 import reflex as rx
 
 from .redis_queue import redis_queue
-from .tasks import sync_usage_task, build_configs_task, cleanup_deleted_panels_task, update_service_task, delete_service_task
+from .tasks import sync_usage_task, build_configs_task, cleanup_deleted_panels_task, update_service_task, delete_service_task, sync_services_with_panels_task
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +36,7 @@ class RedisWorkerManager:
             redis_queue.register_worker('cleanup_panels', cleanup_deleted_panels_task)
             redis_queue.register_worker('update_service', update_service_task)
             redis_queue.register_worker('delete_service', delete_service_task)
+            redis_queue.register_worker('sync_services_with_panels', sync_services_with_panels_task)
             
             # Start workers
             redis_queue.start_all_workers()
@@ -55,29 +56,23 @@ class RedisWorkerManager:
         def scheduler_loop():
             logger.info("Starting Redis task scheduler...")
             last_cleanup_time = None
-            last_sync_task_id = None
+            last_sync_time = None
             
             while self.running:
                 try:
                     current_time = datetime.now()
                     
-                    # Check if previous sync_usage task is completed
-                    if last_sync_task_id:
-                        task_status = redis_queue.get_task_status(last_sync_task_id)
-                        if task_status and task_status.get('status') in ['completed', 'failed']:
-                            # Previous task is done, enqueue new one
-                            from .tasks import enqueue_sync_usage
-                            new_task_id = enqueue_sync_usage()
-                            last_sync_task_id = new_task_id
-                            logger.info(f"Enqueued new sync_usage task {new_task_id} after previous task completed")
-                            print(f"🔄 Scheduler: Enqueued new sync_usage task {new_task_id}")
-                    elif last_sync_task_id is None:
-                        # First time, enqueue initial task
+                    # Run sync usage every 2 minutes (time-based)
+                    if (last_sync_time is None or 
+                        (current_time - last_sync_time).total_seconds() >= 120):
                         from .tasks import enqueue_sync_usage
                         new_task_id = enqueue_sync_usage()
-                        last_sync_task_id = new_task_id
-                        logger.info(f"Enqueued initial sync_usage task {new_task_id}")
-                        print(f"🔄 Scheduler: Enqueued initial sync_usage task {new_task_id}")
+                        last_sync_time = current_time
+                        # Silent execution - no logging
+                    
+                    # Initialize last_sync_time if None
+                    if last_sync_time is None:
+                        last_sync_time = current_time
                     
                     # Run cleanup every hour (time-based)
                     if (last_cleanup_time is None or 
@@ -86,7 +81,6 @@ class RedisWorkerManager:
                         enqueue_cleanup_panels()
                         last_cleanup_time = current_time
                         logger.info(f"Enqueued cleanup_panels task at {current_time}")
-                        print(f"🧹 Scheduler: Enqueued cleanup_panels task at {current_time}")
                     
                     time.sleep(10)  # Check every 10 seconds for faster response
                     

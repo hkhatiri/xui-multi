@@ -89,7 +89,7 @@ async def create_service(
             session.commit()
             
             from .tasks import enqueue_build_configs
-            enqueue_build_configs(service_uuid, creator.id, service_data.protocol, service_data.duration_days, service_data.data_limit_gb)
+            enqueue_build_configs(service_uuid)
             
             try:
                 from .cache_manager import invalidate_service_cache, invalidate_traffic_cache

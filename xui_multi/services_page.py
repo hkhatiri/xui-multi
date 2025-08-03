@@ -548,9 +548,9 @@ def services_page() -> rx.Component:
         ),
 
         rx.box(
-            rx.table.root(
-                rx.table.header(
-                    rx.table.row(
+        rx.table.root(
+            rx.table.header(
+                rx.table.row(
                         rx.table.column_header_cell("عملیات", text_align="center", width="8%"),
                         rx.table.column_header_cell("زمان باقی مانده", text_align="center", width="15%"),
                         rx.table.column_header_cell("حجم مصرفی", text_align="center", width="15%"),
@@ -558,58 +558,58 @@ def services_page() -> rx.Component:
                         rx.table.column_header_cell("پروتکل", text_align="center", width="10%"),
                         rx.table.column_header_cell("وضعیت", text_align="center", width="12%"),
                         rx.table.column_header_cell("نام سرویس", text_align="center", width="28%"),
-                    )
-                ),
-                rx.table.body(
-                    rx.foreach(
-                        DashboardState.services_display,
-                        lambda service: rx.table.row(
-                            rx.table.cell(
-                                rx.dropdown_menu.root(
-                                    rx.dropdown_menu.trigger(rx.icon_button(rx.icon("ellipsis-vertical"), variant="soft")),
-                                    rx.dropdown_menu.content(
-                                        rx.dropdown_menu.item(rx.hstack(rx.icon("pencil", size=16), rx.text("ویرایش")), on_click=lambda: DashboardState.open_edit_dialog(service)),
-                                        rx.dropdown_menu.separator(),
-                                        rx.dropdown_menu.item(rx.hstack(rx.icon("trash-2", size=16), rx.text("حذف")), color="red", on_click=lambda: DashboardState.open_delete_dialog(service)),
-                                        rx.dropdown_menu.item(rx.hstack(rx.icon("copy", size=16), rx.text("کپی لینک")), on_click=lambda: DashboardState.copy_to_clipboard(service["subscription_link"])),
-                                        align="center",
-                                        spacing="2"
-                                    )
+                )
+            ),
+            rx.table.body(
+                rx.foreach(
+                    DashboardState.services_display,
+                    lambda service: rx.table.row(
+                        rx.table.cell(
+                            rx.dropdown_menu.root(
+                                rx.dropdown_menu.trigger(rx.icon_button(rx.icon("ellipsis-vertical"), variant="soft")),
+                                rx.dropdown_menu.content(
+                                    rx.dropdown_menu.item(rx.hstack(rx.icon("pencil", size=16), rx.text("ویرایش")), on_click=lambda: DashboardState.open_edit_dialog(service)),
+                                    rx.dropdown_menu.separator(),
+                                    rx.dropdown_menu.item(rx.hstack(rx.icon("trash-2", size=16), rx.text("حذف")), color="red", on_click=lambda: DashboardState.open_delete_dialog(service)),
+                                    rx.dropdown_menu.item(rx.hstack(rx.icon("copy", size=16), rx.text("کپی لینک")), on_click=lambda: DashboardState.copy_to_clipboard(service["subscription_link"])),
+                                    align="center",
+                                    spacing="2"
+                                )
+                            ),
+                                text_align="center"
+                        ),
+                        rx.table.cell(service["remaining_time"], text_align="center"),
+                        rx.table.cell(service["data_usage"], text_align="center"),
+                        rx.table.cell(
+                            rx.text(
+                                f"{service['config_count']}",
+                                text_align="center",
+                                font_weight="bold"
                                 ),
                                 text_align="center"
-                            ),
-                            rx.table.cell(service["remaining_time"], text_align="center"),
-                            rx.table.cell(service["data_usage"], text_align="center"),
-                            rx.table.cell(
-                                rx.text(
-                                    f"{service['config_count']}",
-                                    text_align="center",
-                                    font_weight="bold"
-                                ),
-                                text_align="center"
-                            ),
-                            rx.table.cell(
+                        ),
+                        rx.table.cell(
                                 rx.badge(service["protocol"], color_scheme="purple", size="1"),
                                 text_align="center"
-                            ),
-                            rx.table.cell(
-                                rx.badge(
-                                    service["status_fa"], 
-                                    color_scheme=rx.cond(
-                                        service["status"] == "active",
-                                        "green",
-                                        "red"
-                                    ), 
-                                    size="1"
+                        ),
+                        rx.table.cell(
+                            rx.badge(
+                                service["status_fa"], 
+                                color_scheme=rx.cond(
+                                    service["status"] == "active",
+                                    "green",
+                                    "red"
+                                ), 
+                                size="1"
                                 ),
                                 text_align="center"
-                            ),
-                            rx.table.cell(service["name"], text_align="center", font_weight="medium"),
                         ),
-                    )
-                ),
-                variant="surface",
-                style={"width": "100%", "border": "1px solid #e2e8f0", "border_radius": "8px"}
+                            rx.table.cell(service["name"], text_align="center", font_weight="medium"),
+                    ),
+                )
+            ),
+            variant="surface",
+            style={"width": "100%", "border": "1px solid #e2e8f0", "border_radius": "8px"}
             ),
             width="100%",
             max_width="1400px",

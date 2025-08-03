@@ -22,11 +22,11 @@ class RedisQueue:
         self.workers = {}
         self.running = False
         
-    def enqueue_task(self, task_name: str, task_data: Dict[str, Any], priority: int = 0):
-        """Add a task to the queue"""
+    def enqueue_task(self, task_name: str, task_id: str, task_data: Dict[str, Any], priority: int = 0):
+        """Add task to queue"""
         try:
             task = {
-                'id': f"{task_name}_{int(time.time() * 1000)}",
+                'id': task_id,
                 'name': task_name,
                 'data': task_data,
                 'priority': priority,
@@ -35,9 +35,19 @@ class RedisQueue:
             }
             
             # Add to queue with priority
-            self.redis_client.zadd(f"queue:{task_name}", {json.dumps(task): priority})
-            logger.info(f"Task {task_name} added to queue with priority {priority}")
-            return task['id']
+            self.redis_client.zadd(f"queue:{task_name}", {task_id: priority})
+            
+            # Store task data separately
+            self.redis_client.hset(f"task:{task_id}", mapping={
+                'name': task_name,
+                'task_type': task_name,  # Store task type for filtering
+                'data': json.dumps(task_data),
+                'priority': str(priority),
+                'created_at': task['created_at'],
+                'status': 'pending'
+            })
+            
+            return task_id
             
         except Exception as e:
             logger.error(f"Error enqueueing task {task_name}: {e}")
@@ -49,13 +59,35 @@ class RedisQueue:
             # Get highest priority task
             tasks = self.redis_client.zrevrange(f"queue:{task_name}", 0, 0, withscores=True)
             if tasks:
-                task_json, priority = tasks[0]
-                task = json.loads(task_json)
+                task_id, priority = tasks[0]
                 
-                # Remove from queue
-                self.redis_client.zrem(f"queue:{task_name}", task_json)
-                
-                return task
+                # Get task data from hash
+                task_data = self.redis_client.hgetall(f"task:{task_id}")
+                if task_data:
+                    try:
+                        data_json = task_data.get('data', '{}')
+                        if data_json:
+                            task = {
+                                'id': task_id,
+                                'name': task_data.get('name', task_name),
+                                'data': json.loads(data_json),
+                                'priority': int(task_data.get('priority', 0)),
+                                'created_at': task_data.get('created_at', ''),
+                                'status': task_data.get('status', 'pending')
+                            }
+                            
+                            # Remove from queue
+                            self.redis_client.zrem(f"queue:{task_name}", task_id)
+                            
+                            return task
+                        else:
+                            # Remove invalid task from queue
+                            self.redis_client.zrem(f"queue:{task_name}", task_id)
+                            logger.warning(f"Removed invalid task {task_id} from queue")
+                    except json.JSONDecodeError as e:
+                        # Remove invalid task from queue
+                        self.redis_client.zrem(f"queue:{task_name}", task_id)
+                        logger.warning(f"Removed task {task_id} with invalid JSON: {e}")
             return None
             
         except Exception as e:
@@ -78,7 +110,7 @@ class RedisQueue:
                 try:
                     task = self.dequeue_task(task_name)
                     if task:
-                        logger.info(f"Processing task: {task['id']}")
+                        # logger.info(f"Processing task: {task['id']}")  # Removed to reduce log noise
                         
                         # Update task status
                         self.redis_client.hset(f"task:{task['id']}", mapping={
@@ -98,7 +130,7 @@ class RedisQueue:
                                     'result': json.dumps(result) if result else ''
                                 })
                                 
-                                logger.info(f"Task {task['id']} completed successfully")
+                                # logger.info(f"Task {task['id']} completed successfully")  # Removed to reduce log noise
                                 
                             except Exception as e:
                                 logger.error(f"Error executing task {task['id']}: {e}")

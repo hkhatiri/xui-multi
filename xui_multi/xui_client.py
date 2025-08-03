@@ -89,8 +89,23 @@ class XUIClient:
             result = response.json()
             if not result.get("success"):
                 raise Exception(f"Failed to create inbound: {result.get('msg')}")
+            
+            # Wait a moment for the inbound to be properly created
+            import time
+            time.sleep(1)
+            
             inbound_id = self._get_id_from_remark(payload['remark'])
+            if inbound_id is None:
+                # Try again after a longer delay
+                time.sleep(2)
+                inbound_id = self._get_id_from_remark(payload['remark'])
+                if inbound_id is None:
+                    raise Exception(f"Could not find inbound with remark '{payload['remark']}' after creation")
+            
             inbound_data = self.get_inbound(inbound_id)
+            if not inbound_data:
+                raise Exception(f"Could not get inbound data for ID {inbound_id}")
+            
             config_link = self._construct_config_link(inbound_data, domain, config_remark)
             return {"link": config_link, "inbound_id": inbound_id}
 
@@ -192,6 +207,15 @@ class XUIClient:
 
         return True
 
+    def get_all_inbounds_data(self) -> List[Dict[str, Any]]:
+        """تمام دیتای inbound ها را یکبار دریافت می‌کند برای کش کردن"""
+        try:
+            all_inbounds = self._get_inbounds_list()
+            return all_inbounds
+        except Exception as e:
+            logger.error(f"Error getting all inbounds data from {self.base_url}: {e}")
+            return []
+
     def get_inbound_traffic_gb(self, inbound_id: int) -> float:
         inbound_data = self.get_inbound(inbound_id)
         if not inbound_data: return 0.0
@@ -238,7 +262,8 @@ class XUIClient:
             if inbound.get("remark") == remark: 
                 return inbound.get("id")
         logger.error(f"Could not find inbound with remark '{remark}' after creation.")
-        raise Exception(f"Could not find inbound with remark '{remark}' after creation.")
+        # Instead of raising exception, return None and let caller handle it
+        return None
 
     def delete_inbound(self, inbound_id: int):
         del_url = f"{self.base_url}/panel/inbound/del/{inbound_id}"

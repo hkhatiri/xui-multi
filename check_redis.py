@@ -8,6 +8,7 @@ import redis
 import json
 from datetime import datetime
 import sys
+from collections import defaultdict
 
 def check_redis_status():
     """Check Redis queue status"""
@@ -47,18 +48,92 @@ def check_redis_status():
         else:
             print("  - No queues found")
         
-        # Get task status keys
+        # Get task status keys and analyze them
         task_keys = r.keys("task:*")
         print(f"\n📋 Number of registered tasks: {len(task_keys)}")
         
         if task_keys:
-            print("\n📋 Recent task status:")
+            # Analyze tasks by type and status
+            task_stats = defaultdict(lambda: defaultdict(int))
+            completed_tasks = []
+            
+            for task_key in task_keys:
+                task_id = task_key.split(":", 1)[1]
+                task_info = r.hgetall(task_key)
+                
+                if task_info:
+                    status = task_info.get('status', 'unknown')
+                    task_type = task_info.get('task_type', 'unknown')
+                    created_at = task_info.get('created_at', 'unknown')
+                    completed_at = task_info.get('completed_at', '')
+                    
+                    # Count by type and status
+                    task_stats[task_type][status] += 1
+                    
+                    # Collect completed tasks for detailed view
+                    if status == 'completed' and completed_at:
+                        completed_tasks.append({
+                            'id': task_id,
+                            'type': task_type,
+                            'created_at': created_at,
+                            'completed_at': completed_at,
+                            'task_info': task_info
+                        })
+            
+            # Show task statistics by type
+            print("\n📊 Task Statistics by Type:")
+            print("-" * 40)
+            for task_type, status_counts in task_stats.items():
+                total = sum(status_counts.values())
+                print(f"\n🔹 {task_type}: {total} total tasks")
+                for status, count in status_counts.items():
+                    status_icon = {
+                        'pending': '⏳',
+                        'processing': '🔄',
+                        'completed': '✅',
+                        'failed': '❌'
+                    }.get(status, '❓')
+                    print(f"   {status_icon} {status}: {count}")
+            
+            # Show last 10 completed tasks for build_configs and sync_usage
+            print("\n📋 Last 10 Completed Tasks (build_configs & sync_usage):")
+            print("-" * 60)
+            
+            # Filter completed tasks for specific types
+            target_tasks = [task for task in completed_tasks 
+                          if task['type'] in ['build_configs', 'sync_usage']]
+            
+            # Sort by completion time (newest first) and take last 10
+            target_tasks.sort(key=lambda x: x['completed_at'], reverse=True)
+            recent_tasks = target_tasks[:10]
+            
+            if recent_tasks:
+                for i, task in enumerate(recent_tasks, 1):
+                    task_type_icon = "🔧" if task['type'] == 'build_configs' else "📊"
+                    print(f"\n{i}. {task_type_icon} {task['type']} - Task ID: {task['id']}")
+                    print(f"   📅 Created: {task['created_at']}")
+                    print(f"   ✅ Completed: {task['completed_at']}")
+                    
+                    # Show additional task details if available
+                    if 'service_uuid' in task['task_info']:
+                        print(f"   🔗 Service UUID: {task['task_info']['service_uuid']}")
+                    if 'result' in task['task_info']:
+                        result = task['task_info']['result']
+                        if result and result != 'None':
+                            print(f"   📝 Result: {result[:100]}{'...' if len(result) > 100 else ''}")
+            else:
+                print("   No completed tasks found for build_configs or sync_usage")
+            
+            # Show recent task status (all types)
+            print(f"\n📋 Recent task status (all types):")
+            print("-" * 40)
             # Show last 10 tasks
             for task_key in task_keys[-10:]:
                 task_id = task_key.split(":", 1)[1]
                 task_info = r.hgetall(task_key)
                 if task_info:
                     status = task_info.get('status', 'unknown')
+                    task_type = task_info.get('task_type', 'unknown')
                     created_at = task_info.get('created_at', 'unknown')
                     completed_at = task_info.get('completed_at', '')
                     
@@ -70,7 +145,16 @@ def check_redis_status():
                         'failed': '❌'
                     }.get(status, '❓')
                     
-                    print(f"  {status_icon} {task_id}: {status}")
+                    task_type_icon = {
+                        'build_configs': '🔧',
+                        'sync_usage': '📊',
+                        'cleanup_panels': '🧹',
+                        'update_service': '🔄',
+                        'delete_service': '🗑️',
+                        'sync_services_with_panels': '🔗'
+                    }.get(task_type, '📋')
+                    
+                    print(f"  {status_icon} {task_type_icon} {task_id} ({task_type}): {status}")
                     if completed_at:
                         print(f"    └─ Completed: {completed_at}")
         

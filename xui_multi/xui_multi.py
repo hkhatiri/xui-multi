@@ -6,7 +6,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sqlmodel import select
 from fastapi.staticfiles import StaticFiles
 import base64
-import traceback
 
 # --- وارد کردن تمام کامپوننت‌ها و State های لازم ---
 from xui_multi.api_routes import *
@@ -19,7 +18,8 @@ from xui_multi.auth_state import AuthState, create_initial_admin_user
 from .template import template
 from .models import Panel, ManagedService, PanelConfig, Backup, User
 from .xui_client import XUIClient
-from .redis_worker import start_redis_workers
+from .tasks import verify_and_fix_subscription_files
+# from .redis_worker import start_redis_workers  # Removed - workers run separately now
 
 # --- تنظیمات پایه ---
 base_style = {"direction": "rtl", "font_family": "IRANSans"}
@@ -76,6 +76,7 @@ def run_all_backups():
 # --- راه‌اندازی اسکجولر ---
 scheduler = BackgroundScheduler()
 scheduler.add_job(run_all_backups, 'interval', hours=12)
+scheduler.add_job(verify_and_fix_subscription_files, 'interval', hours=6)  # Check every 6 hours
 scheduler.start()
 
 # --- State و UI صفحه اصلی ---
@@ -172,103 +173,18 @@ class IndexState(AuthState):
     async def sync_services_with_panels(self):
         self.is_updating = True
         self.show_update_dialog = False
-        self.update_message = "در حال بررسی و همگام‌سازی سرویس‌ها..."
+        self.update_message = "در حال ارسال درخواست همگام‌سازی به Redis..."
         self.update_status = "info"
 
         try:
-            with rx.session() as session:
-                all_services = session.query(ManagedService).all()
-                all_panels = session.query(Panel).all()
-                if not all_panels:
-                    self.update_message = "هیچ پنلی برای همگام‌سازی تعریف نشده است."
-                    self.update_status = "error"
-                    self.is_updating = False
-                    return
-
-                services_updated_count = 0
-                configs_created_count = 0
-
-                for service in all_services:
-                    was_service_updated = False
-                    existing_panel_ids = {config.panel_id for config in service.configs}
-                    new_links = []
-
-                    creator = session.query(User).filter(User.id == service.created_by_id).first()
-                    if not creator:
-                        continue
-
-                    for panel in all_panels:
-                        if panel.id not in existing_panel_ids:
-                            print(f"Service '{service.name}' is missing on panel '{panel.remark_prefix}'. Creating...")
-                            try:
-                                client = XUIClient(panel.url, panel.username, panel.password)
-
-                                expiry_time_ms = int(service.end_date.timestamp() * 1000)
-                                limit_gb_bytes = int(service.data_limit_gb * 1024 * 1024 * 1024)
-
-                                used_ports = set(client.get_used_ports())
-                                base_port = 20000
-
-                                vless_port = base_port
-                                while vless_port in used_ports: vless_port += 1
-                                used_ports.add(vless_port)
-
-                                shadowsocks_port = vless_port + 1
-                                while shadowsocks_port in used_ports: shadowsocks_port += 1
-
-                                remark = f"{panel.remark_prefix}-{creator.remark}"
-                                vless_remark = f"{remark}-{vless_port}"
-                                vless_result = client.create_vless_inbound(vless_remark, panel.domain, vless_port, 0, 0, expiry_time_ms=expiry_time_ms, total_gb_bytes=limit_gb_bytes)
-                                new_links.append(vless_result["link"])
-                                session.add(PanelConfig(managed_service_id=service.id, panel_id=panel.id, panel_inbound_id=vless_result["inbound_id"], config_link=vless_result["link"]))
-                                configs_created_count += 1
-
-                                ss_remark = f"{remark}-{shadowsocks_port}"
-                                ss_result = client.create_shadowsocks_inbound(ss_remark, panel.domain, shadowsocks_port, 0, 0, expiry_time_ms=expiry_time_ms, total_gb_bytes=limit_gb_bytes)
-                                new_links.append(ss_result["link"])
-                                session.add(PanelConfig(managed_service_id=service.id, panel_id=panel.id, panel_inbound_id=ss_result["inbound_id"], config_link=ss_result["link"]))
-                                configs_created_count += 1
-
-                                was_service_updated = True
-                            except Exception as e:
-                                print(f"Error creating config for service {service.name} on panel {panel.url}: {e}")
-
-                    if was_service_updated:
-                        services_updated_count += 1
-                        if service.subscription_link and new_links:
-                            file_name = service.subscription_link.split("/")[-1]
-                            file_path = os.path.join("static/subs", file_name)
-
-                            existing_content = ""
-                            if os.path.exists(file_path):
-                                with open(file_path, "r") as f:
-                                    base64_content = f.read()
-                                if base64_content:
-                                    try:
-                                        existing_content = base64.b64decode(base64_content).decode('utf-8')
-                                    except Exception:
-                                        existing_content = ""
-
-                            all_links_str = existing_content + "\n" + "\n".join(new_links)
-                            new_base64_content = base64.b64encode(all_links_str.encode('utf-8')).decode('utf-8')
-
-                            with open(file_path, "w") as f:
-                                f.write(new_base64_content)
-
-                if services_updated_count > 0:
-                    session.commit()
-                    
-                    # حذف کش‌ها
-                    from .cache_manager import invalidate_service_cache, invalidate_panel_cache, invalidate_traffic_cache
-                    invalidate_service_cache()
-                    invalidate_panel_cache()
-                    invalidate_traffic_cache()
-
-            self.update_message = f"همگام‌سازی کامل شد. {configs_created_count} کانفیگ جدید برای {services_updated_count} سرویس ساخته شد."
+            from .tasks import enqueue_sync_services_with_panels
+            task_id = enqueue_sync_services_with_panels()
+            
+            self.update_message = f"درخواست همگام‌سازی به Redis ارسال شد. Task ID: {task_id}"
             self.update_status = "success"
 
         except Exception as e:
-            self.update_message = f"خطا در همگام‌سازی: {traceback.format_exc()}"
+            self.update_message = f"خطا در ارسال درخواست همگام‌سازی: {str(e)}"
             self.update_status = "error"
         finally:
             self.is_updating = False
@@ -353,5 +269,6 @@ app.add_page(template(admin_page), route="/admin", title="مدیریت ادمی�
 # --- ایجاد کاربر ادمین اولیه در زمان راه‌اندازی ---
 create_initial_admin_user()
 
-# --- راه‌اندازی Redis Workers ---
-start_redis_workers()
+# --- Redis Workers are now running separately in background ---
+# Use: ./manage_redis_workers.sh {start|stop|restart|status|logs}
+# start_redis_workers()  # Removed - workers run separately now
