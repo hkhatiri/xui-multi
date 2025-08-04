@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def sync_usage_task():
     """تسک همگام‌سازی حجم استفاده شده سرویس‌ها با استفاده از فایل‌های JSON"""
-    # Silent execution - no logging to reduce log file size
+    logger.info(f"[{datetime.now()}] Starting sync_usage_task")
     
     # Create temporary directory for JSON files
     temp_dir = tempfile.mkdtemp(prefix="xui_cache_")
@@ -39,6 +39,7 @@ def sync_usage_task():
                         json.dump(inbounds_data, f, ensure_ascii=False, indent=2)
                     
                 except Exception as e:
+                    logger.error(f"Error fetching data from panel {panel.url}: {e}")
                     continue
             
             # Step 2: Process services using JSON files
@@ -47,59 +48,68 @@ def sync_usage_task():
             ).all()
             
             for service in services:
-                total_usage_gb = 0
-                service_configs = session.query(PanelConfig).filter(
-                    PanelConfig.managed_service_id == service.id
-                ).all()
-                
-                for config in service_configs:
-                    try:
-                        # Load panel data from JSON file
-                        json_file = os.path.join(temp_dir, f"panel_{config.panel_id}.json")
-                        if os.path.exists(json_file):
-                            with open(json_file, 'r', encoding='utf-8') as f:
-                                panel_data = json.load(f)
-                            
-                            # Find inbound data
-                            inbound_data = None
-                            for inbound in panel_data:
-                                if inbound.get("id") == config.panel_inbound_id:
-                                    inbound_data = inbound
-                                    break
-                            
-                            if inbound_data:
-                                # Calculate usage
-                                up_gb = inbound_data.get("up", 0) / (1024 * 1024 * 1024)
-                                down_gb = inbound_data.get("down", 0) / (1024 * 1024 * 1024)
-                                traffic_gb = up_gb + down_gb
-                                total_usage_gb += traffic_gb
-                            else:
-                                pass
-                        else:
-                            pass
-                            
-                    except Exception as e:
-                        continue
-                
-                # Update service usage
-                service.data_used_gb = total_usage_gb
-                
-                # Check if service should be disabled
-                if total_usage_gb >= service.data_limit_gb:
+                try:
+                    total_usage_gb = 0
+                    service_configs = session.query(PanelConfig).filter(
+                        PanelConfig.managed_service_id == service.id
+                    ).all()
+                    
                     for config in service_configs:
                         try:
-                            panel = session.query(Panel).filter(Panel.id == config.panel_id).first()
-                            client = XUIClient(panel.url, panel.username, panel.password)
-                            client.disable_inbound(config.panel_inbound_id)
+                            # Load panel data from JSON file
+                            json_file = os.path.join(temp_dir, f"panel_{config.panel_id}.json")
+                            if os.path.exists(json_file):
+                                with open(json_file, 'r', encoding='utf-8') as f:
+                                    panel_data = json.load(f)
+                                
+                                # Find inbound data
+                                inbound_data = None
+                                for inbound in panel_data:
+                                    if inbound.get("id") == config.panel_inbound_id:
+                                        inbound_data = inbound
+                                        break
+                                
+                                if inbound_data:
+                                    # Calculate usage
+                                    up_gb = inbound_data.get("up", 0) / (1024 * 1024 * 1024)
+                                    down_gb = inbound_data.get("down", 0) / (1024 * 1024 * 1024)
+                                    traffic_gb = up_gb + down_gb
+                                    total_usage_gb += traffic_gb
+                                else:
+                                    logger.warning(f"Inbound {config.panel_inbound_id} not found for service {service.name}")
+                            else:
+                                logger.warning(f"JSON file not found for panel {config.panel_id}")
+                                
                         except Exception as e:
-                            pass
-                
-                session.add(service)
+                            logger.error(f"Error processing config {config.panel_inbound_id} for service {service.name}: {e}")
+                            continue
+                    
+                    # Update service usage
+                    service.data_used_gb = total_usage_gb
+                    
+                    # Check if service should be disabled
+                    if total_usage_gb >= service.data_limit_gb:
+                        logger.warning(f"Service {service.name} has exceeded limit: {total_usage_gb:.2f} GB >= {service.data_limit_gb} GB")
+                        for config in service_configs:
+                            try:
+                                panel = session.query(Panel).filter(Panel.id == config.panel_id).first()
+                                client = XUIClient(panel.url, panel.username, panel.password)
+                                client.disable_inbound(config.panel_inbound_id)
+                                logger.info(f"Disabled inbound {config.panel_inbound_id} for service {service.name}")
+                            except Exception as e:
+                                logger.error(f"Error disabling inbound {config.panel_inbound_id}: {e}")
+                    
+                    session.add(service)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing service {service.name}: {e}")
+                    continue
             
             session.commit()
             
     except Exception as e:
-        pass
+        logger.error(f"Error in sync_usage_task: {e}")
+        raise
     
     finally:
         # Step 3: Clean up JSON files
@@ -107,7 +117,32 @@ def sync_usage_task():
             import shutil
             shutil.rmtree(temp_dir)
         except Exception as e:
-            pass
+            logger.error(f"Error cleaning up temporary files: {e}")
+
+def sync_usage_continuous_task():
+    """تسک همگام‌سازی حجم استفاده شده سرویس‌ها - Continuous Mode"""
+    logger.info(f"[{datetime.now()}] Starting sync_usage_continuous_task")
+    
+    while True:
+        try:
+            # Enqueue a new sync_usage task for each iteration
+            task_id = f"sync_usage_{int(datetime.now().timestamp() * 1000)}"
+            from .redis_queue import redis_queue
+            redis_queue.enqueue_task("sync_usage", task_id, {})
+            
+            # Wait 30 seconds before next iteration
+            logger.info("Waiting 30 seconds before next sync_usage iteration...")
+            import time
+            time.sleep(30)
+            
+        except KeyboardInterrupt:
+            logger.info("sync_usage_continuous_task interrupted by user")
+            break
+        except Exception as e:
+            logger.error(f"Critical error in sync_usage_continuous_task: {e}")
+            # Wait a bit before retrying
+            import time
+            time.sleep(60)
 
 def build_configs_task(service_uuid: str):
     """تسک ساخت کانفیگ‌ها برای سرویس"""
@@ -471,229 +506,3 @@ def enqueue_sync_services_with_panels():
     logger.info(f"Sync services with panels task enqueued: {task_id}")
     return task_id
 
-def verify_and_fix_subscription_files():
-    """Verify and fix subscription files automatically"""
-    logger.info(f"[{datetime.now()}] Starting subscription files verification...")
-    
-    try:
-        import base64
-        import glob
-        import os
-        
-        subs_dir = "static/subs"
-        if not os.path.exists(subs_dir):
-            logger.info(f"Subscription directory not found: {subs_dir}")
-            return
-        
-        # Get all txt files
-        txt_files = glob.glob(os.path.join(subs_dir, "*.txt"))
-        logger.info(f"Found {len(txt_files)} subscription files")
-        
-        fixed_count = 0
-        for file_path in txt_files:
-            filename = os.path.basename(file_path)
-            service_uuid = filename.replace('.txt', '')
-            
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                if not content.strip():
-                    logger.warning(f"Empty file: {filename}")
-                    continue
-                
-                # Try to decode base64
-                try:
-                    decoded = base64.b64decode(content).decode('utf-8')
-                    
-                    # Check for broken content patterns
-                    broken_patterns = [
-                        "در حال ساخت کانفیگ‌ها",
-                        "2K/YsSDYrdin2YQg2LPYp9iu2Kog2qnYp9mG2YHbjNqv4oCM2YfYpy4uLgrZhNi32YHYp9mLINqG2YbYryDZhNit2LjZhyDYtdio",
-                        "لطفاً چند لحظه صبر کنید"
-                    ]
-                    
-                    is_broken = False
-                    for pattern in broken_patterns:
-                        if pattern in decoded:
-                            is_broken = True
-                            break
-                    
-                    if is_broken or len(decoded.strip()) < 10:
-                        logger.warning(f"Broken content detected: {filename}")
-                        # Fix the service
-                        if fix_service_subscription(service_uuid):
-                            fixed_count += 1
-                            logger.info(f"Fixed: {filename}")
-                    
-                except Exception as e:
-                    logger.warning(f"Error decoding {filename}: {e}")
-                    
-            except Exception as e:
-                logger.error(f"Error reading {filename}: {e}")
-        
-        logger.info(f"Fixed {fixed_count} subscription files")
-        
-    except Exception as e:
-        logger.error(f"Error in verify_and_fix_subscription_files: {e}")
-
-def fix_service_subscription(service_uuid):
-    """Fix subscription for a specific service"""
-    try:
-        import base64
-        import os
-        
-        engine = create_engine(rx.config.get_config().db_url)
-        with Session(engine) as session:
-            service = session.query(ManagedService).filter(ManagedService.uuid == service_uuid).first()
-            if not service:
-                logger.error(f"Service with UUID {service_uuid} not found")
-                return False
-            
-            logger.info(f"Fixing subscription for service: {service.name}")
-            
-            # Get all configs for this service
-            configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
-            
-            if configs:
-                # Create new subscription content
-                subscription_content = "\n".join([config.config_link for config in configs if config.config_link])
-                
-                if subscription_content.strip():
-                    # Create subscription file
-                    subs_dir = "static/subs"
-                    os.makedirs(subs_dir, exist_ok=True)
-                    file_path = os.path.join(subs_dir, f"{service_uuid}.txt")
-                    
-                    # Encode to base64
-                    encoded_content = base64.b64encode(subscription_content.encode('utf-8')).decode('utf-8')
-                    
-                    with open(file_path, "w", encoding='utf-8') as f:
-                        f.write(encoded_content)
-                    
-                    logger.info(f"Updated subscription file for service {service.name} with {len(configs)} configs")
-                    return True
-                else:
-                    logger.error(f"No valid config_links found for service {service.name}")
-                    return False
-            else:
-                logger.error(f"No configs found for service {service.name}")
-                return False
-                
-    except Exception as e:
-        logger.error(f"Error fixing service subscription: {e}")
-        return False
-
-def fix_specific_service_configs(service_uuid: str):
-    """Fix configs for a specific service"""
-    logger.info(f"[{datetime.now()}] Starting fix_specific_service_configs for service: {service_uuid}")
-    
-    try:
-        engine = create_engine(rx.config.get_config().db_url)
-        with Session(engine) as session:
-            service = session.query(ManagedService).filter(ManagedService.uuid == service_uuid).first()
-            if not service:
-                logger.error(f"Service with UUID {service_uuid} not found")
-                return False
-            
-            panels = session.query(Panel).all()
-            logger.info(f"[{datetime.now()}] Processing service: {service.name} with {len(panels)} panels")
-            
-            for panel in panels:
-                # Check if config exists for this service-panel combination
-                existing_config = session.query(PanelConfig).filter(
-                    PanelConfig.managed_service_id == service.id,
-                    PanelConfig.panel_id == panel.id
-                ).first()
-                
-                if existing_config:
-                    # Try to regenerate config_link for existing config
-                    try:
-                        logger.info(f"[{datetime.now()}] Regenerating config_link for service {service.name} on panel {panel.url}")
-                        
-                        client = XUIClient(panel.url, panel.username, panel.password)
-                        inbound_data = client.get_inbound(existing_config.panel_inbound_id)
-                        
-                        if inbound_data:
-                            # Regenerate config_link
-                            config_link = client._construct_config_link(inbound_data, panel.domain, existing_config.config_link)
-                            existing_config.config_link = config_link
-                            session.commit()
-                            logger.info(f"Regenerated config_link for service {service.name} on panel {panel.url}")
-                        else:
-                            logger.warning(f"Inbound {existing_config.panel_inbound_id} not found on panel {panel.url}")
-                    
-                    except Exception as e:
-                        logger.error(f"Error regenerating config_link for service {service.name} on panel {panel.url}: {e}")
-                        continue
-                else:
-                    try:
-                        logger.info(f"[{datetime.now()}] Creating config for service {service.name} on panel {panel.url}")
-                        
-                        client = XUIClient(panel.url, panel.username, panel.password)
-                        used_ports = client.get_used_ports()
-                        port = 20000
-                        while port in used_ports:
-                            port += 1
-                        
-                        if service.protocol in ["vless", "shadowsocks"]:
-                            remark = f"{panel.remark_prefix}-{service.name}"
-                            if service.protocol == "vless":
-                                result = client.create_vless_inbound(
-                                    remark=remark,
-                                    domain=panel.domain,
-                                    port=port,
-                                    expiry_days=(service.end_date - service.start_date).days,
-                                    limit_gb=service.data_limit_gb
-                                )
-                            else:
-                                result = client.create_shadowsocks_inbound(
-                                    remark=remark,
-                                    domain=panel.domain,
-                                    port=port,
-                                    expiry_days=(service.end_date - service.start_date).days,
-                                    limit_gb=service.data_limit_gb
-                                )
-                            
-                            config = PanelConfig(
-                                managed_service_id=service.id,
-                                panel_id=panel.id,
-                                panel_inbound_id=result["inbound_id"],
-                                config_link=result["link"]
-                            )
-                            session.add(config)
-                            session.commit()
-                            logger.info(f"Created config for service {service.name} on panel {panel.url}")
-                        else:
-                            logger.warning(f"Unsupported protocol {service.protocol} for service {service.name}")
-                    
-                    except Exception as e:
-                        logger.error(f"Error creating config for service {service.name} on panel {panel.url}: {e}")
-                        continue
-            
-            # Update subscription file
-            configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
-            if configs:
-                subscription_content = "\n".join([config.config_link for config in configs if config.config_link])
-                
-                # Create subscription file
-                subs_dir = "static/subs"
-                os.makedirs(subs_dir, exist_ok=True)
-                file_path = os.path.join(subs_dir, f"{service.uuid}.txt")
-                
-                logger.info(f"[{datetime.now()}] Writing subscription file: {file_path}")
-                logger.info(f"[{datetime.now()}] Subscription content length: {len(subscription_content)}")
-                logger.info(f"[{datetime.now()}] First 100 chars: {subscription_content[:100]}")
-                
-                with open(file_path, "w", encoding='utf-8') as f:
-                    f.write(subscription_content)
-                
-                logger.info(f"[{datetime.now()}] Updated subscription file for service {service.name} with {len(configs)} configs")
-                return True
-            else:
-                logger.warning(f"No configs found for service {service.name}")
-                return False
-                
-    except Exception as e:
-        logger.error(f"Fix specific service configs failed with error: {e}")
-        return False

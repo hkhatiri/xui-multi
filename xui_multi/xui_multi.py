@@ -18,7 +18,7 @@ from xui_multi.auth_state import AuthState, create_initial_admin_user
 from .template import template
 from .models import Panel, ManagedService, PanelConfig, Backup, User
 from .xui_client import XUIClient
-from .tasks import verify_and_fix_subscription_files
+
 # from .redis_worker import start_redis_workers  # Removed - workers run separately now
 
 # --- تنظیمات پایه ---
@@ -76,7 +76,7 @@ def run_all_backups():
 # --- راه‌اندازی اسکجولر ---
 scheduler = BackgroundScheduler()
 scheduler.add_job(run_all_backups, 'interval', hours=12)
-scheduler.add_job(verify_and_fix_subscription_files, 'interval', hours=6)  # Check every 6 hours
+
 scheduler.start()
 
 # --- State و UI صفحه اصلی ---

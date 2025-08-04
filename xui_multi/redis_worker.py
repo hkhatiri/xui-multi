@@ -5,7 +5,7 @@ from datetime import datetime
 import reflex as rx
 
 from .redis_queue import redis_queue
-from .tasks import sync_usage_task, build_configs_task, cleanup_deleted_panels_task, update_service_task, delete_service_task, sync_services_with_panels_task
+from .tasks import sync_usage_task, sync_usage_continuous_task, build_configs_task, cleanup_deleted_panels_task, update_service_task, delete_service_task, sync_services_with_panels_task
 
 # Configure logging
 logging.basicConfig(
@@ -38,11 +38,20 @@ class RedisWorkerManager:
             redis_queue.register_worker('delete_service', delete_service_task)
             redis_queue.register_worker('sync_services_with_panels', sync_services_with_panels_task)
             
+            # Start continuous sync_usage task in a separate thread
+            import threading
+            continuous_thread = threading.Thread(target=sync_usage_continuous_task, daemon=True)
+            continuous_thread.start()
+            logger.info("Started continuous sync_usage task")
+            
             # Start workers
             redis_queue.start_all_workers()
             
             # Start scheduler for periodic tasks
             self.start_scheduler()
+            
+            # Note: sync_usage is now handled by continuous task
+            logger.info("sync_usage is now handled by continuous task")
             
             logger.info("Redis workers started successfully")
             
@@ -56,23 +65,13 @@ class RedisWorkerManager:
         def scheduler_loop():
             logger.info("Starting Redis task scheduler...")
             last_cleanup_time = None
-            last_sync_time = None
             
             while self.running:
                 try:
                     current_time = datetime.now()
                     
-                    # Run sync usage every 2 minutes (time-based)
-                    if (last_sync_time is None or 
-                        (current_time - last_sync_time).total_seconds() >= 120):
-                        from .tasks import enqueue_sync_usage
-                        new_task_id = enqueue_sync_usage()
-                        last_sync_time = current_time
-                        # Silent execution - no logging
-                    
-                    # Initialize last_sync_time if None
-                    if last_sync_time is None:
-                        last_sync_time = current_time
+                    # Note: sync_usage is now running in continuous mode
+                    # No need to schedule it every 2 minutes
                     
                     # Run cleanup every hour (time-based)
                     if (last_cleanup_time is None or 
