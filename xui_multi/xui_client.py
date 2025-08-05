@@ -116,6 +116,7 @@ class XUIClient:
             total_gb_bytes = int(limit_gb * 1024 * 1024 * 1024)
 
         client_id = str(uuid4())
+        # Use remark as email since remark is now unique
         settings = {"clients": [{"id": client_id, "email": remark, "totalGB": total_gb_bytes, "expiryTime": expiry_time_ms, "enable": True}], "decryption": "none", "fallbacks": []}
         stream_settings = {"network": "tcp", "security": "none", "tcpSettings": {"header": {"type": "http", "request": {"version": "1.1", "method": "GET", "path": ["/"], "headers": {}}, "response": {"version": "1.1", "status": "200", "reason": "OK", "headers": {}}}}}
         sniffing = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"]}
@@ -139,6 +140,7 @@ class XUIClient:
         main_password = base64.b64encode(os.urandom(32)).decode('utf-8')
         client_password = base64.b64encode(os.urandom(32)).decode('utf-8')
 
+        # Use remark as email since remark is now unique
         settings = {
             "method": method, "password": main_password,
             "clients": [{"method": method, "password": client_password, "email": remark, "totalGB": total_gb_bytes, "expiryTime": expiry_time_ms, "enable": True}]

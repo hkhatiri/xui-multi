@@ -2,6 +2,7 @@ import os
 import json
 import tempfile
 from datetime import datetime
+from uuid import uuid4
 import reflex as rx
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -174,18 +175,20 @@ def build_configs_task(service_uuid: str):
                     
                     # Create inbound based on service protocol
                     if service.protocol == "vless":
-                        remark = f"{panel.remark_prefix}-{service.name}"
+                        # Create unique remark to prevent duplicates
+                        unique_remark = f"{panel.remark_prefix}-{service.name}-{str(uuid4())[:8]}"
                         result = client.create_vless_inbound(
-                            remark=remark,
+                            remark=unique_remark,
                             domain=panel.domain,
                             port=port,
                             expiry_days=(service.end_date - service.start_date).days,
                             limit_gb=service.data_limit_gb
                         )
                     elif service.protocol == "shadowsocks":
-                        remark = f"{panel.remark_prefix}-{service.name}"
+                        # Create unique remark to prevent duplicates
+                        unique_remark = f"{panel.remark_prefix}-{service.name}-{str(uuid4())[:8]}"
                         result = client.create_shadowsocks_inbound(
-                            remark=remark,
+                            remark=unique_remark,
                             domain=panel.domain,
                             port=port,
                             expiry_days=(service.end_date - service.start_date).days,
@@ -375,10 +378,11 @@ def sync_services_with_panels_task():
                                 port += 1
                             
                             if service.protocol in ["vless", "shadowsocks"]:
-                                remark = f"{panel.remark_prefix}-{service.name}"
+                                # Create unique remark to prevent duplicates
+                                unique_remark = f"{panel.remark_prefix}-{service.name}-{str(uuid4())[:8]}"
                                 if service.protocol == "vless":
                                     result = client.create_vless_inbound(
-                                        remark=remark,
+                                        remark=unique_remark,
                                         domain=panel.domain,
                                         port=port,
                                         expiry_days=(service.end_date - service.start_date).days,
@@ -386,7 +390,7 @@ def sync_services_with_panels_task():
                                     )
                                 else:
                                     result = client.create_shadowsocks_inbound(
-                                        remark=remark,
+                                        remark=unique_remark,
                                         domain=panel.domain,
                                         port=port,
                                         expiry_days=(service.end_date - service.start_date).days,
