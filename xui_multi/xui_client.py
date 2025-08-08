@@ -209,6 +209,20 @@ class XUIClient:
 
         return True
 
+    def update_inbound_simple(self, inbound_id: int, expiry_days: int, limit_gb: int) -> bool:
+        """به‌روزرسانی ساده inbound با روزهای انقضا و محدودیت حجم"""
+        try:
+            # Convert expiry_days to milliseconds
+            expiry_time_ms = int((datetime.now() + timedelta(days=expiry_days)).timestamp() * 1000)
+            
+            # Convert limit_gb to bytes
+            total_gb_bytes = limit_gb * 1024 * 1024 * 1024
+            
+            return self.update_inbound(inbound_id, total_gb_bytes, expiry_time_ms)
+        except Exception as e:
+            logger.error(f"Error updating inbound {inbound_id}: {e}")
+            raise
+
     def get_all_inbounds_data(self) -> List[Dict[str, Any]]:
         """تمام دیتای inbound ها را یکبار دریافت می‌کند برای کش کردن"""
         try:

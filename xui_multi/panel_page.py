@@ -99,27 +99,18 @@ class PanelsState(AuthState):
     def delete_panel(self, panel_id: int):
         self.check_auth()
         with rx.session() as session:
-            panel_to_delete = session.get(Panel, panel_id)
-            if panel_to_delete:
-                backups = session.exec(select(Backup).where(Backup.panel_id == panel_id)).all()
-                for backup in backups:
-                    session.delete(backup)
-                session.delete(panel_to_delete)
-            session.commit()
-            
-            # حذف کش پنل‌ها
-            from .cache_manager import invalidate_panel_cache
-            invalidate_panel_cache()
-            
-            # اجرای وظیفه پاکسازی کانفیگ‌های مربوط به پنل حذف شده
-            try:
-                from .tasks import cleanup_deleted_panels_task
-                cleanup_deleted_panels_task.delay()
-            except Exception as e:
-                print(f"Error triggering cleanup task: {e}")
-            
-            self.load_panels_with_stats()
-        return rx.window_alert("پنل با موفقیت حذف شد.")
+            panel = session.get(Panel, panel_id)
+            if panel:
+                session.delete(panel)
+                session.commit()
+                
+                # حذف کش پنل‌ها
+                from .cache_manager import invalidate_panel_cache
+                invalidate_panel_cache()
+                
+                self.load_panels_with_stats()
+                return rx.window_alert("پنل با موفقیت حذف شد.")
+        return rx.window_alert("خطا در حذف پنل.")
 
 # --- State for Backups Page ---
 class PanelBackupsState(AuthState):

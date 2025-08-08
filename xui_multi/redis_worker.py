@@ -5,7 +5,7 @@ from datetime import datetime
 import reflex as rx
 
 from .redis_queue import redis_queue
-from .tasks import sync_usage_task, sync_usage_continuous_task, build_configs_task, cleanup_deleted_panels_task, update_service_task, delete_service_task, sync_services_with_panels_task
+from .tasks import sync_usage_task, sync_usage_continuous_task, build_configs_task, cleanup_deleted_panels_task, update_service_task, delete_service_task, sync_services_with_panels_task, check_and_update_service_status, check_expired_services
 
 # Configure logging
 logging.basicConfig(
@@ -37,6 +37,8 @@ class RedisWorkerManager:
             redis_queue.register_worker('update_service', update_service_task)
             redis_queue.register_worker('delete_service', delete_service_task)
             redis_queue.register_worker('sync_services_with_panels', sync_services_with_panels_task)
+            redis_queue.register_worker('check_service_status', check_and_update_service_status)
+            redis_queue.register_worker('check_expired_services', check_expired_services)
             
             # Start continuous sync_usage task in a separate thread
             import threading
@@ -80,6 +82,18 @@ class RedisWorkerManager:
                         enqueue_cleanup_panels()
                         last_cleanup_time = current_time
                         logger.info(f"Enqueued cleanup_panels task at {current_time}")
+                    
+                    # Run check_service_status every 5 minutes
+                    if (current_time.minute % 5 == 0 and current_time.second < 10):
+                        from .tasks import enqueue_check_service_status
+                        enqueue_check_service_status()
+                        logger.info(f"Enqueued check_service_status task at {current_time}")
+                    
+                    # Run check_expired_services every 10 minutes
+                    if (current_time.minute % 10 == 0 and current_time.second < 10):
+                        from .tasks import enqueue_check_expired_services
+                        enqueue_check_expired_services()
+                        logger.info(f"Enqueued check_expired_services task at {current_time}")
                     
                     time.sleep(10)  # Check every 10 seconds for faster response
                     

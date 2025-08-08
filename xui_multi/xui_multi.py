@@ -73,6 +73,73 @@ def run_all_backups():
                 print(f"خطای نامشخص هنگام بکاپ‌گیری از پنل {panel.remark_prefix}: {e}")
     print("پایان فرآیند پشتیبان‌گیری.")
 
+# --- تعریف State برای آپدیت سرویس‌ها ---
+class UpdateServicesState(rx.State):
+    show_dialog: bool = False
+    is_updating: bool = False
+    update_message: str = ""
+    update_status: str = ""
+
+    def trigger_update_dialog(self):
+        self.show_dialog = True
+
+    def close_dialog(self):
+        self.show_dialog = False
+        self.update_message = ""
+        self.update_status = ""
+
+    def update_all_services(self):
+        self.is_updating = True
+        self.update_status = "info"
+        self.update_message = "در حال آپدیت سرویس‌ها..."
+
+        try:
+            # درخواست آپدیت به API
+            response = requests.post("http://localhost:8000/api/update-all-services")
+            if response.status_code == 200:
+                self.update_status = "success"
+                self.update_message = "سرویس‌ها با موفقیت آپدیت شدند"
+            else:
+                self.update_status = "error"
+                self.update_message = f"خطا در آپدیت سرویس‌ها: {response.text}"
+        except Exception as e:
+            self.update_status = "error"
+            self.update_message = f"خطا در اتصال به سرور: {str(e)}"
+        finally:
+            self.is_updating = False
+
+def update_services_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.header("آپدیت سرویس‌ها"),
+            rx.dialog.body(
+                rx.vstack(
+                    rx.text("آیا مطمئن هستید که می‌خواهید تمام سرویس‌ها را آپدیت کنید؟"),
+                    rx.text("این عملیات ممکن است چند دقیقه طول بکشد."),
+                    spacing="4",
+                )
+            ),
+            rx.dialog.footer(
+                rx.hstack(
+                    rx.button(
+                        "انصراف",
+                        on_click=UpdateServicesState.close_dialog,
+                        variant="soft",
+                    ),
+                    rx.button(
+                        "آپدیت",
+                        on_click=UpdateServicesState.update_all_services,
+                        loading=UpdateServicesState.is_updating,
+                        color_scheme="blue",
+                    ),
+                    spacing="3",
+                )
+            ),
+        ),
+        open=UpdateServicesState.show_dialog,
+        on_open_change=UpdateServicesState.set_show_dialog,
+    )
+
 # --- راه‌اندازی اسکجولر ---
 scheduler = BackgroundScheduler()
 scheduler.add_job(run_all_backups, 'interval', hours=12)
@@ -166,49 +233,51 @@ class IndexState(AuthState):
             cache_manager.set(online_cache_key, self.online_configs_count, ttl=30)
 
     def trigger_update_dialog(self):
-        self.update_message = ""
-        self.update_status = ""
         self.show_update_dialog = True
 
-    async def sync_services_with_panels(self):
-        self.is_updating = True
+    def close_update_dialog(self):
         self.show_update_dialog = False
-        self.update_message = "در حال ارسال درخواست همگام‌سازی به Redis..."
+
+    def update_all_services(self):
+        self.is_updating = True
         self.update_status = "info"
+        self.update_message = "در حال آپدیت سرویس‌ها..."
 
         try:
-            from .tasks import enqueue_sync_services_with_panels
-            task_id = enqueue_sync_services_with_panels()
-            
-            self.update_message = f"درخواست همگام‌سازی به Redis ارسال شد. Task ID: {task_id}"
-            self.update_status = "success"
-
+            response = requests.post("http://localhost:8000/api/update-all-services")
+            if response.status_code == 200:
+                self.update_status = "success"
+                self.update_message = "سرویس‌ها با موفقیت آپدیت شدند"
+            else:
+                self.update_status = "error"
+                self.update_message = f"خطا در آپدیت سرویس‌ها: {response.text}"
         except Exception as e:
-            self.update_message = f"خطا در ارسال درخواست همگام‌سازی: {str(e)}"
             self.update_status = "error"
+            self.update_message = f"خطا در اتصال به سرور: {str(e)}"
         finally:
             self.is_updating = False
-            self.load_stats()
 
 # --- کامپوننت‌های قابل استفاده مجدد ---
-def stat_card(title: str, value: rx.Var, icon: str, color: str):
-    return rx.card(rx.hstack(rx.icon(icon, size=48, color=color), rx.vstack(rx.heading(value.to_string(), size="7"), rx.text(title, color="gray"),align="start"),spacing="4",align="center"),size="3",width="250px")
+def stat_card(title: str, value, icon: str, color: str) -> rx.Component:
+    return rx.stat(
+        rx.stat_number(value),
+        rx.stat_label(title),
+        rx.stat_help_text(rx.icon(icon, size=20)),
+        color_scheme=color,
+    )
 
 def traffic_stat_card() -> rx.Component:
-    return rx.card(rx.vstack(rx.hstack(rx.icon("arrow-down-up", size=40, color="green"),rx.vstack(rx.heading(f"{IndexState.total_traffic_gb:.2f} GB", size="6"),rx.text("کل ترافیک مصرفی", color="gray"),align="start",),spacing="4",align="center",),rx.divider(margin_y="0.5em"),rx.hstack(rx.badge(rx.text(f"D: {IndexState.total_download_gb:.2f} GB"), color_scheme="blue", variant="soft"),rx.spacer(),rx.badge(rx.text(f"U: {IndexState.total_upload_gb:.2f} GB"), color_scheme="orange", variant="soft"),width="100%",justify="between",),spacing="3",width="100%",),size="3",width="250px")
-
-def update_services_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("تایید همگام‌سازی سرویس‌ها"),
-            rx.alert_dialog.description("این عملیات تمام سرویس‌ها را با تمام پنل‌ها بررسی می‌کند و در صورت نیاز کانفیگ‌های جدید می‌سازد. این کار ممکن است زمان‌بر باشد. آیا مطمئن هستید؟"),
-            rx.flex(
-                rx.alert_dialog.cancel(rx.button("انصراف", variant="soft", color_scheme="gray")),
-                rx.alert_dialog.action(rx.button("بله، همگام‌سازی کن", on_click=IndexState.sync_services_with_panels, color_scheme="teal")),
-                spacing="3", margin_top="1em", justify="end",
-            ), style={"direction": "rtl"}
+    return rx.stat(
+        rx.stat_number(f"{IndexState.total_traffic_gb:.2f} GB"),
+        rx.stat_label("کل ترافیک مصرفی"),
+        rx.stat_help_text(
+            rx.hstack(
+                rx.text(f"↑ {IndexState.total_upload_gb:.2f} GB"),
+                rx.text(f"↓ {IndexState.total_download_gb:.2f} GB"),
+                spacing="2",
+            )
         ),
-        open=IndexState.show_update_dialog, on_open_change=IndexState.set_show_update_dialog
+        color_scheme="teal",
     )
 
 # --- تعریف صفحه اصلی ---

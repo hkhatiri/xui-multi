@@ -77,9 +77,11 @@ def sync_usage_task():
                                     traffic_gb = up_gb + down_gb
                                     total_usage_gb += traffic_gb
                                 else:
-                                    logger.warning(f"Inbound {config.panel_inbound_id} not found for service {service.name}")
+                                    # logger.warning(f"Inbound {config.panel_inbound_id} not found for service {service.name}") # Disabled log
+                                    pass
                             else:
-                                logger.warning(f"JSON file not found for panel {config.panel_id}")
+                                # logger.warning(f"JSON file not found for panel {config.panel_id}") # Disabled log
+                                pass
                                 
                         except Exception as e:
                             logger.error(f"Error processing config {config.panel_inbound_id} for service {service.name}: {e}")
@@ -91,12 +93,21 @@ def sync_usage_task():
                     # Check if service should be disabled
                     if total_usage_gb >= service.data_limit_gb:
                         logger.warning(f"Service {service.name} has exceeded limit: {total_usage_gb:.2f} GB >= {service.data_limit_gb} GB")
+                        
+                        # Update service status to limit_reached
+                        if service.status != "limit_reached":
+                            service.status = "limit_reached"
+                            logger.info(f"Updated service {service.name} status to limit_reached")
+                        
+                        # Disable all configs for this service
                         for config in service_configs:
                             try:
                                 panel = session.query(Panel).filter(Panel.id == config.panel_id).first()
-                                client = XUIClient(panel.url, panel.username, panel.password)
-                                client.disable_inbound(config.panel_inbound_id)
-                                logger.info(f"Disabled inbound {config.panel_inbound_id} for service {service.name}")
+                                if panel:
+                                    client = XUIClient(panel.url, panel.username, panel.password)
+                                    client.disable_inbound(config.panel_inbound_id)
+                                else:
+                                    logger.warning(f"Panel not found for config {config.id}")
                             except Exception as e:
                                 logger.error(f"Error disabling inbound {config.panel_inbound_id}: {e}")
                     
@@ -305,10 +316,51 @@ def update_service_task(service_uuid: str, **updates):
                 logger.error(f"Service with UUID {service_uuid} not found")
                 return
             
+            # Store original values for comparison
+            original_end_date = service.end_date
+            original_data_limit = service.data_limit_gb
+            
             # Update service fields
             for field, value in updates.items():
                 if hasattr(service, field):
+                    # Handle datetime fields
+                    if field == "end_date" and isinstance(value, str):
+                        value = datetime.fromisoformat(value)
                     setattr(service, field, value)
+            
+            # Check if important fields were updated
+            configs_need_update = (
+                service.end_date != original_end_date or 
+                service.data_limit_gb != original_data_limit
+            )
+            
+            if configs_need_update:
+                logger.info(f"Service {service_uuid} has important updates, updating X-UI configs...")
+                
+                # Get all configs for this service
+                configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
+                
+                for config in configs:
+                    try:
+                        panel = session.query(Panel).filter(Panel.id == config.panel_id).first()
+                        if panel:
+                            client = XUIClient(panel.url, panel.username, panel.password)
+                            
+                            # Calculate new expiry days
+                            expiry_days = (service.end_date - service.start_date).days
+                            
+                            # Update the inbound with new settings
+                            client.update_inbound_simple(
+                                inbound_id=config.panel_inbound_id,
+                                expiry_days=expiry_days,
+                                limit_gb=service.data_limit_gb
+                            )
+                            
+                            logger.info(f"Updated config {config.panel_inbound_id} for service {service.name} on panel {panel.url}")
+                        else:
+                            logger.warning(f"Panel not found for config {config.id}")
+                    except Exception as e:
+                        logger.error(f"Error updating config {config.panel_inbound_id} for service {service.name}: {e}")
             
             session.commit()
             logger.info(f"[{datetime.now()}] Service {service_uuid} updated successfully")
@@ -490,7 +542,7 @@ def enqueue_update_service(service_uuid: str, **updates):
     """Enqueue update_service task"""
     from .redis_queue import redis_queue
     task_id = f"update_service_{int(datetime.now().timestamp() * 1000)}"
-    redis_queue.enqueue_task("update_service", task_id, {"service_uuid": service_uuid, "updates": updates})
+    redis_queue.enqueue_task("update_service", task_id, {"service_uuid": service_uuid, **updates})
     logger.info(f"Update service task enqueued: {task_id}")
     return task_id
 
@@ -508,5 +560,98 @@ def enqueue_sync_services_with_panels():
     task_id = f"sync_services_with_panels_{int(datetime.now().timestamp() * 1000)}"
     redis_queue.enqueue_task("sync_services_with_panels", task_id, {})
     logger.info(f"Sync services with panels task enqueued: {task_id}")
+    return task_id
+
+def check_and_update_service_status():
+    """بررسی و به‌روزرسانی وضعیت سرویس‌ها بر اساس زمان انقضا و حجم مصرفی"""
+    logger.info(f"[{datetime.now()}] Starting check_and_update_service_status")
+    
+    try:
+        engine = create_engine(rx.config.get_config().db_url)
+        with Session(engine) as session:
+            active_services = session.query(ManagedService).filter(ManagedService.status == "active").all()
+            updated_count = 0
+            for service in active_services:
+                current_time = datetime.now()
+                status_changed = False
+                new_status = service.status
+                if current_time > service.end_date:
+                    if service.status != "expired":
+                        new_status = "expired"
+                        status_changed = True
+                elif service.data_used_gb >= service.data_limit_gb:
+                    if service.status != "limit_reached":
+                        new_status = "limit_reached"
+                        status_changed = True
+                if status_changed:
+                    service.status = new_status
+                    updated_count += 1
+                    if new_status in ["expired", "limit_reached"]:
+                        configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
+                        for config in configs:
+                            try:
+                                panel = config.panel
+                                if panel:
+                                    client = XUIClient(panel.url, panel.username, panel.password)
+                                    client.disable_inbound(config.panel_inbound_id)
+                                else:
+                                    logger.warning(f"Panel not found for config {config.id}")
+                            except Exception as e:
+                                logger.error(f"Error disabling inbound {config.panel_inbound_id}: {e}")
+            if updated_count > 0:
+                session.commit()
+                logger.info(f"Updated status for {updated_count} services")
+            else:
+                pass # logger.info("No service status updates needed") # Disabled log
+    except Exception as e:
+        logger.error(f"Error in check_and_update_service_status: {e}")
+        raise
+
+def check_expired_services():
+    """بررسی و غیرفعال کردن سرویس‌های منقضی شده بر اساس زمان"""
+    logger.info(f"[{datetime.now()}] Starting check_expired_services")
+    
+    try:
+        engine = create_engine(rx.config.get_config().db_url)
+        with Session(engine) as session:
+            current_time = datetime.now()
+            expired_services = session.query(ManagedService).filter(
+                ManagedService.status == "active",
+                ManagedService.end_date < current_time
+            ).all()
+            if not expired_services:
+                return
+            for service in expired_services:
+                service.status = "expired"
+                configs = session.query(PanelConfig).filter(PanelConfig.managed_service_id == service.id).all()
+                for config in configs:
+                    try:
+                        panel = config.panel
+                        if panel:
+                            client = XUIClient(panel.url, panel.username, panel.password)
+                            client.disable_inbound(config.panel_inbound_id)
+                        else:
+                            logger.warning(f"Panel not found for config {config.id}")
+                    except Exception as e:
+                        logger.error(f"Error disabling expired inbound {config.panel_inbound_id}: {e}")
+                session.commit()
+    except Exception as e:
+        logger.error(f"Error in check_expired_services: {e}")
+        raise
+
+def enqueue_check_service_status():
+    """Enqueue check_service_status task"""
+    from .redis_queue import redis_queue
+    task_id = f"check_service_status_{int(datetime.now().timestamp() * 1000)}"
+    redis_queue.enqueue_task("check_service_status", task_id, {})
+    logger.info(f"Check service status task enqueued: {task_id}")
+    return task_id
+
+def enqueue_check_expired_services():
+    """Enqueue check_expired_services task"""
+    from .redis_queue import redis_queue
+    task_id = f"check_expired_services_{int(datetime.now().timestamp() * 1000)}"
+    redis_queue.enqueue_task("check_expired_services", task_id, {})
+    logger.info(f"Check expired services task enqueued: {task_id}")
     return task_id
 

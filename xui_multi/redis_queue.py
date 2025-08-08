@@ -110,7 +110,7 @@ class RedisQueue:
                 try:
                     task = self.dequeue_task(task_name)
                     if task:
-                        # logger.info(f"Processing task: {task['id']}")  # Removed to reduce log noise
+                        logger.info(f"Starting task: {task['id']}")
                         
                         # Update task status
                         self.redis_client.hset(f"task:{task['id']}", mapping={
@@ -130,7 +130,7 @@ class RedisQueue:
                                     'result': json.dumps(result) if result else ''
                                 })
                                 
-                                # logger.info(f"Task {task['id']} completed successfully")  # Removed to reduce log noise
+                                logger.info(f"Completed task: {task['id']}")
                                 
                             except Exception as e:
                                 logger.error(f"Error executing task {task['id']}: {e}")

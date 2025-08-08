@@ -115,9 +115,17 @@ async def update_service(
         if service.created_by_id != current_user.id and current_user.username != "hkhatiri":
             raise HTTPException(status_code=403, detail="شما اجازه دسترسی به این سرویس را ندارید.")
 
-        # Add task to Redis queue
+        # Calculate new end date based on duration_days
+        from datetime import datetime, timedelta
+        new_end_date = service.start_date + timedelta(days=update_data.duration_days)
+
+        # Add task to Redis queue with proper datetime serialization
         from .tasks import enqueue_update_service
-        task_id = enqueue_update_service(service_uuid, update_data.data_limit_gb, update_data.duration_days)
+        task_id = enqueue_update_service(
+            service_uuid, 
+            data_limit_gb=update_data.data_limit_gb,
+            end_date=new_end_date.isoformat()
+        )
 
         return {
             "status": "success", 
@@ -148,6 +156,171 @@ async def delete_service(
             "message": "درخواست حذف سرویس در صف قرار گرفت و در حال پردازش است.",
             "task_id": task_id
         }
+
+@api.post("/services/check-status")
+async def check_service_status(
+    current_user: User = Depends(get_current_user)
+):
+    """بررسی و به‌روزرسانی وضعیت سرویس‌ها"""
+    try:
+        from .tasks import enqueue_check_service_status
+        task_id = enqueue_check_service_status()
+        return {"success": True, "task_id": task_id, "message": "بررسی وضعیت سرویس‌ها شروع شد"}
+    except Exception as e:
+        logger.error(f"Error enqueueing check service status: {e}")
+        raise HTTPException(status_code=500, detail=f"خطا در شروع بررسی وضعیت: {str(e)}")
+
+@api.post("/services/check-expired")
+async def check_expired_services(
+    current_user: User = Depends(get_current_user)
+):
+    """بررسی سرویس‌های منقضی شده"""
+    try:
+        from .tasks import enqueue_check_expired_services
+        task_id = enqueue_check_expired_services()
+        return {"success": True, "task_id": task_id, "message": "بررسی سرویس‌های منقضی شروع شد"}
+    except Exception as e:
+        logger.error(f"Error enqueueing check expired services: {e}")
+        raise HTTPException(status_code=500, detail=f"خطا در شروع بررسی منقضی‌ها: {str(e)}")
+
+@api.get("/services/inactive/count")
+async def get_inactive_services_count(
+    current_user: User = Depends(get_current_user)
+):
+    """دریافت تعداد سرویس‌های غیرفعال"""
+    try:
+        with rx.session() as session:
+            expired_count = session.exec(
+                select(ManagedService).where(
+                    ManagedService.status == "expired"
+                )
+            ).count()
+            
+            limit_reached_count = session.exec(
+                select(ManagedService).where(
+                    ManagedService.status == "limit_reached"
+                )
+            ).count()
+            
+            total_inactive = expired_count + limit_reached_count
+            
+            # Get some examples
+            expired_examples = session.exec(
+                select(ManagedService).where(
+                    ManagedService.status == "expired"
+                ).limit(5)
+            ).all()
+            
+            limit_reached_examples = session.exec(
+                select(ManagedService).where(
+                    ManagedService.status == "limit_reached"
+                ).limit(5)
+            ).all()
+            
+            return {
+                "success": True,
+                "count_info": {
+                    "expired": expired_count,
+                    "limit_reached": limit_reached_count,
+                    "total_inactive": total_inactive
+                },
+                "examples": {
+                    "expired": [{"name": s.name, "end_date": s.end_date.isoformat()} for s in expired_examples],
+                    "limit_reached": [{"name": s.name, "data_used_gb": s.data_used_gb, "data_limit_gb": s.data_limit_gb} for s in limit_reached_examples]
+                }
+            }
+    except Exception as e:
+        logger.error(f"Error getting inactive services count: {e}")
+        raise HTTPException(status_code=500, detail=f"خطا در دریافت تعداد سرویس‌های غیرفعال: {str(e)}")
+
+@api.delete("/services/inactive/batch")
+async def delete_inactive_services_batch(
+    current_user: User = Depends(get_current_user)
+):
+    """حذف سرویس‌های غیرفعال در دسته‌های کوچک"""
+    try:
+        with rx.session() as session:
+            inactive_services = session.exec(
+                select(ManagedService).where(
+                    ManagedService.status.in_(["expired", "limit_reached"])
+                )
+            ).all()
+            
+            if not inactive_services:
+                return {"success": True, "message": "هیچ سرویس غیرفعالی برای حذف وجود ندارد."}
+            
+            deleted_count = 0
+            failed_count = 0
+            errors = []
+            
+            # Process in smaller batches
+            batch_size = 10
+            for i in range(0, len(inactive_services), batch_size):
+                batch = inactive_services[i:i + batch_size]
+                
+                for service in batch:
+                    try:
+                        # Get all configs for this service
+                        configs = session.exec(
+                            select(PanelConfig).where(
+                                PanelConfig.managed_service_id == service.id
+                            )
+                        ).all()
+                        
+                        # Delete configs from X-UI panels
+                        for config in configs:
+                            try:
+                                panel = session.exec(
+                                    select(Panel).where(Panel.id == config.panel_id)
+                                ).first()
+                                
+                                if panel:
+                                    client = XUIClient(panel.url, panel.username, panel.password)
+                                    client.delete_inbound(config.panel_inbound_id)
+                                else:
+                                    logger.warning(f"Panel not found for config {config.id}")
+                            except Exception as e:
+                                # logger.error(f"خطای غیربحرانی: حذف کانفیگ {config.panel_inbound_id} از پنل {config.panel_id} با مشکل مواجه شد: {e}") # Disabled log
+                                pass
+                        
+                        # Delete configs from database
+                        session.exec(
+                            select(PanelConfig).where(
+                                PanelConfig.managed_service_id == service.id
+                            )
+                        ).delete()
+                        
+                        # Delete service from database
+                        session.delete(service)
+                        deleted_count += 1
+                        
+                    except Exception as e:
+                        failed_count += 1
+                        errors.append(f"خطا در حذف سرویس {service.name}: {str(e)}")
+                        logger.error(f"Error deleting service {service.name}: {e}")
+                
+                # Commit after each batch
+                session.commit()
+            
+            if failed_count > 0:
+                return {
+                    "success": True,
+                    "partial_success": True,
+                    "message": f"حذف با موفقیت نسبی انجام شد. {deleted_count} سرویس حذف شد، {failed_count} سرویس با خطا مواجه شد.",
+                    "deleted_count": deleted_count,
+                    "failed_count": failed_count,
+                    "errors": errors
+                }
+            else:
+                return {
+                    "success": True,
+                    "message": f"{deleted_count} سرویس غیرفعال با موفقیت حذف شد.",
+                    "deleted_count": deleted_count
+                }
+                
+    except Exception as e:
+        logger.error(f"Error in batch delete inactive services: {e}")
+        raise HTTPException(status_code=500, detail=f"خطا در حذف دسته‌ای: {str(e)}")
 
 @api.delete("/services/inactive")
 async def delete_inactive_services(

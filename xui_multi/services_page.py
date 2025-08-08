@@ -353,22 +353,34 @@ class DashboardState(AuthState):
         """باز کردن دیالوگ حذف گروهی"""
         self.show_bulk_delete_dialog = True
 
+    def set_show_bulk_delete_dialog(self, value: bool):
+        """Set bulk delete dialog state"""
+        self.show_bulk_delete_dialog = value
+
     async def confirm_bulk_delete(self):
         """تایید حذف گروهی"""
         self.is_bulk_deleting = True
         try:
             import httpx
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.delete(
                     f"{self.api_url}/services/inactive",
                     headers={"X-API-Authorization": self.user_api_key}
                 )
                 
                 if response.status_code == 200:
+                    response_data = response.json()
                     self.show_bulk_delete_dialog = False
                     await self.load_and_filter_services()
-                    self.action_message = "سرویس‌های غیرفعال با موفقیت حذف شدند."
-                    self.action_status = "success"
+                    
+                    # Handle different response types
+                    if response_data.get("partial_success"):
+                        self.action_message = f"حذف با موفقیت نسبی انجام شد. {response_data.get('message', '')}"
+                        self.action_status = "warning"
+                    else:
+                        self.action_message = "سرویس‌های غیرفعال با موفقیت حذف شدند."
+                        self.action_status = "success"
+                    
                     # حذف کش‌ها
                     try:
                         from .cache_manager import invalidate_service_cache
@@ -380,7 +392,108 @@ class DashboardState(AuthState):
                     self.action_message = error_data.get("detail", "خطا در حذف گروهی")
                     self.action_status = "error"
         except Exception as e:
+            # Disabled generic error log
+            # logger.error(f"Bulk delete request failed: {e}")
             self.action_message = f"خطا در ارتباط با سرور: {str(e)}"
+            self.action_status = "error"
+        finally:
+            self.is_bulk_deleting = False
+
+    async def check_service_status(self):
+        """بررسی وضعیت سرویس‌ها"""
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/services/check-status",
+                    headers={"X-API-Authorization": self.user_api_key}
+                )
+                
+                if response.status_code == 200:
+                    self.action_message = "بررسی وضعیت سرویس‌ها با موفقیت انجام شد."
+                    self.action_status = "success"
+                    await self.load_and_filter_services()
+                else:
+                    self.action_message = "خطا در بررسی وضعیت سرویس‌ها"
+                    self.action_status = "error"
+        except Exception as e:
+            self.action_message = f"خطا در بررسی وضعیت: {str(e)}"
+            self.action_status = "error"
+
+    async def check_expired_services(self):
+        """بررسی سرویس‌های منقضی شده"""
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/services/check-expired",
+                    headers={"X-API-Authorization": self.user_api_key}
+                )
+                
+                if response.status_code == 200:
+                    self.action_message = "بررسی سرویس‌های منقضی با موفقیت انجام شد."
+                    self.action_status = "success"
+                    await self.load_and_filter_services()
+                else:
+                    self.action_message = "خطا در بررسی سرویس‌های منقضی"
+                    self.action_status = "error"
+        except Exception as e:
+            self.action_message = f"خطا در بررسی منقضی‌ها: {str(e)}"
+            self.action_status = "error"
+
+    async def get_inactive_services_count(self):
+        """دریافت تعداد سرویس‌های غیرفعال"""
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/services/inactive/count",
+                    headers={"X-API-Authorization": self.user_api_key}
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    count_info = data.get("count_info", {})
+                    expired_count = count_info.get("expired", 0)
+                    limit_reached_count = count_info.get("limit_reached", 0)
+                    total_inactive = expired_count + limit_reached_count
+                    
+                    self.action_message = f"تعداد سرویس‌های غیرفعال: {total_inactive} (منقضی: {expired_count}, محدودیت حجم: {limit_reached_count})"
+                    self.action_status = "info"
+                else:
+                    self.action_message = "خطا در دریافت تعداد سرویس‌های غیرفعال"
+                    self.action_status = "error"
+        except Exception as e:
+            self.action_message = f"خطا در دریافت تعداد: {str(e)}"
+            self.action_status = "error"
+
+    async def delete_inactive_services_batch(self):
+        """حذف سرویس‌های غیرفعال در دسته‌های کوچک"""
+        self.is_bulk_deleting = True
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.delete(
+                    f"{self.api_url}/services/inactive/batch",
+                    headers={"X-API-Authorization": self.user_api_key}
+                )
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    await self.load_and_filter_services()
+                    
+                    if response_data.get("partial_success"):
+                        self.action_message = f"حذف دسته‌ای با موفقیت نسبی: {response_data.get('message', '')}"
+                        self.action_status = "warning"
+                    else:
+                        self.action_message = "حذف دسته‌ای سرویس‌های غیرفعال با موفقیت انجام شد."
+                        self.action_status = "success"
+                else:
+                    error_data = response.json()
+                    self.action_message = error_data.get("detail", "خطا در حذف دسته‌ای")
+                    self.action_status = "error"
+        except Exception as e:
+            self.action_message = f"خطا در حذف دسته‌ای: {str(e)}"
             self.action_status = "error"
         finally:
             self.is_bulk_deleting = False
@@ -513,7 +626,14 @@ def services_page() -> rx.Component:
                 
                 rx.cond(
                     DashboardState.is_admin,
-                    rx.tooltip(rx.icon_button(rx.icon("trash-2"), on_click=DashboardState.trigger_bulk_delete_dialog, color_scheme="ruby", variant="solid", size="3"), content="حذف سرویس‌های غیرفعال"),
+                    rx.hstack(
+                        rx.tooltip(rx.icon_button(rx.icon("activity"), on_click=DashboardState.check_service_status, color_scheme="blue", variant="solid", size="3"), content="بررسی وضعیت سرویس‌ها"),
+                        rx.tooltip(rx.icon_button(rx.icon("clock"), on_click=DashboardState.check_expired_services, color_scheme="orange", variant="solid", size="3"), content="بررسی سرویس‌های منقضی"),
+                        rx.tooltip(rx.icon_button(rx.icon("bar-chart-3"), on_click=DashboardState.get_inactive_services_count, color_scheme="purple", variant="solid", size="3"), content="تعداد سرویس‌های غیرفعال"),
+                        rx.tooltip(rx.icon_button(rx.icon("trash-2"), on_click=DashboardState.trigger_bulk_delete_dialog, color_scheme="ruby", variant="solid", size="3"), content="حذف سرویس‌های غیرفعال"),
+                        rx.tooltip(rx.icon_button(rx.icon("trash"), on_click=DashboardState.delete_inactive_services_batch, color_scheme="red", variant="solid", size="3"), content="حذف دسته‌ای سرویس‌های غیرفعال"),
+                        spacing="2",
+                    ),
                 ),
                 
                 spacing="3",
@@ -536,12 +656,24 @@ def services_page() -> rx.Component:
                 icon=rx.cond(
                     DashboardState.action_status == "success",
                     "check_circle",
-                    "alert_triangle"
+                    rx.cond(
+                        DashboardState.action_status == "warning",
+                        "alert_triangle",
+                        "alert_triangle"
+                    )
                 ),
                 color_scheme=rx.cond(
                     DashboardState.action_status == "success",
                     "green",
-                    "red"
+                    rx.cond(
+                        DashboardState.action_status == "warning",
+                        "orange",
+                        rx.cond(
+                            DashboardState.action_status == "info",
+                            "blue",
+                            "red"
+                        )
+                    )
                 ),
                 margin_bottom="1em"
             )
